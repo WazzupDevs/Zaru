@@ -14,30 +14,12 @@ env:
   NODE_VERSION: "20"
   PNPM_VERSION: "9.15.0"
   TURBO_TELEMETRY_DISABLED: "1"
+  DATABASE_URL: postgresql://eventfleet:eventfleet@localhost:5432/eventfleet?schema=public
+  REDIS_URL: redis://localhost:6379
 
 jobs:
-  install:
-    name: Install dependencies
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: ${{ env.PNPM_VERSION }}
-          run_install: false
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-
-      - name: Install
-        run: pnpm install --frozen-lockfile
-
   lint:
     name: Lint
-    needs: install
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -54,7 +36,6 @@ jobs:
 
   typecheck:
     name: Typecheck
-    needs: install
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -70,9 +51,32 @@ jobs:
         run: pnpm typecheck
 
   test:
-    name: Unit tests
-    needs: install
+    name: Unit + e2e tests
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: eventfleet
+          POSTGRES_PASSWORD: eventfleet
+          POSTGRES_DB: eventfleet
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U eventfleet -d eventfleet"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -83,5 +87,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Unit tests
+      - name: Apply migrations
+        run: pnpm prisma migrate deploy --schema prisma/schema.prisma
+      - name: Run tests
         run: pnpm test
