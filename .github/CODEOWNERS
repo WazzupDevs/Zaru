@@ -1,0 +1,4 @@
+# Default owner for everything in the repo.
+# Format: a path pattern, then one or more owners (GitHub username or email).
+# See: https://docs.github.com/en/repositories/managing-your-repositories-settings-and-features/customizing-your-repository/about-code-owners
+*  wazzupsolana@gmail.com

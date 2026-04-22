@@ -1,0 +1,54 @@
+{
+  "name": "event-fleet",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Event Fleet Platform — two-sided marketplace for event vehicle services in Türkiye.",
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
+    "clean": "turbo run clean && rm -rf node_modules",
+    "prepare": "husky",
+    "db:up": "docker compose -f infra/docker/docker-compose.dev.yml up -d",
+    "db:down": "docker compose -f infra/docker/docker-compose.dev.yml down",
+    "db:logs": "docker compose -f infra/docker/docker-compose.dev.yml logs -f",
+    "db:nuke": "docker compose -f infra/docker/docker-compose.dev.yml down -v",
+    "db:generate": "prisma generate --schema prisma/schema.prisma",
+    "db:migrate": "prisma migrate dev --schema prisma/schema.prisma",
+    "db:studio": "prisma studio --schema prisma/schema.prisma",
+    "db:reset": "prisma migrate reset --schema prisma/schema.prisma"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^19.6.0",
+    "@commitlint/config-conventional": "^19.6.0",
+    "eslint": "^9.17.0",
+    "husky": "^9.1.0",
+    "lint-staged": "^15.2.0",
+    "prettier": "^3.4.0",
+    "prisma": "^5.22.0",
+    "turbo": "^2.3.0",
+    "typescript": "^5.6.0"
+  },
+  "lint-staged": {
+    "*.{ts,tsx}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{js,jsx,mjs,cjs}": [
+      "prettier --write"
+    ],
+    "*.{json,md,yml,yaml}": [
+      "prettier --write"
+    ],
+    "*.prisma": [
+      "prisma format"
+    ]
+  }
+}

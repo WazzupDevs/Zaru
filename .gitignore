@@ -1,0 +1,70 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+.next/
+out/
+.turbo/
+*.tsbuildinfo
+
+# Coverage
+coverage/
+.nyc_output/
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editors / OS
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# Claude Code (local, per-machine state)
+.claude/
+
+# Cursor IDE (auto-generated indexing rules)
+.cursorignore
+
+# Test artifacts
+*.lcov
+playwright-report/
+test-results/
+
+# Expo / RN
+.expo/
+.expo-shared/
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+
+# Native build
+android/app/build/
+ios/build/
+ios/Pods/
+ios/*.xcworkspace/xcuserdata/
+
+# Sentry
+.sentryclirc
+
+# Local data
+*.sqlite
+*.sqlite-journal

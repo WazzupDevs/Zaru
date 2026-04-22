@@ -1,0 +1,48 @@
+# Local development stack: Postgres (with PostGIS) and Redis.
+# Start: pnpm db:up
+# Stop:  pnpm db:down
+# Wipe:  pnpm db:nuke   (removes volumes — destroys local data)
+#
+# Env vars are read from `.env` at the repo root (see .env.example).
+
+name: event-fleet-dev
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    container_name: event-fleet-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-eventfleet}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-eventfleet}
+      POSTGRES_DB: ${POSTGRES_DB:-eventfleet}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-eventfleet} -d ${POSTGRES_DB:-eventfleet}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: event-fleet-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  pgdata:
+  redisdata:
