@@ -110,6 +110,10 @@ event-fleet/
 - **Rate limit katmanlı**: Cloudflare → nginx → NestJS throttler.
 - **Circuit breaker** iyzico, Google Maps, Netgsm, Paraşüt çağrılarında.
 - **SQL:** Prisma öncelik; raw SQL yalnızca PostGIS'te ve **parametreli**.
+- **Migration deploy akışı:** Prod'a ve CI'a `prisma migrate deploy` gider.
+  `migrate dev` yalnızca lokalde schema yazımı sırasında; committed migration'lar
+  `migrate diff --script` ile üretilmiş veya `migrate dev`'in ürettiği SQL manuel
+  gözden geçirilmiş olmalı. `migrate dev` prod'da ASLA.
 
 ## Kod Stili
 
@@ -140,6 +144,15 @@ event-fleet/
 - **Commit:** Conventional Commits (`feat(pricing): add seasonal multiplier`).
 - **PR şablonu:** ne, niye, nasıl test edildi, breaking change var mı, dashboard/metric etkisi.
 - **Claude Code kendi kendine merge etmez.** Her PR insan onayıyla (benimle) merge edilir.
+- **Commit granülaritesi:** Her oturumda minimum iki commit:
+  (a) ana iş — `feat(modül): ...` veya `chore: ...`,
+  (b) oturum sonu — `docs: log session <ID> progress`.
+  Feature commit'ine `progress.md` güncellemesi ASLA karışmaz. Ayrı tutulur ki git log
+  atomik ve revert temiz olsun.
+- **Main'e direkt push yok** (A2a'dan itibaren). Her iş branch'te:
+  `feat/<module>-<short>` → PR aç → CI yeşil + self-review → squash-merge.
+  Solo geliştirici bile olsa PR akışı: template doldurulur, CI gate'i test edilir,
+  hook'ların değeri ölçülür.
 
 ## Claude Code'un Çalışma Kuralları (BENİM İÇİN KRİTİK)
 
