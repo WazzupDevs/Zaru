@@ -18,12 +18,21 @@ const REDACT_PATHS = [
   "req.body.tokenHash",
   "req.body.refreshToken",
   "req.body.code",
+  // PII (A3b): TCKN and IBAN never appear in plaintext anywhere — redact body
+  // and any nested object path to protect against accidental console.log /
+  // logger.debug of a domain entity that hasn't sanitized yet.
+  "req.body.nationalId",
+  "req.body.iban",
   "*.phoneE164",
   "*.tokenHash",
   "*.refreshToken",
   "*.password",
   "*.otp",
   "*.codeHash",
+  "*.nationalId",
+  "*.nationalIdHash",
+  "*.iban",
+  "*.ibanHash",
 ];
 
 const SERVICE_NAME = "event-fleet-api";
