@@ -111,7 +111,6 @@ In-memory event bus (EventEmitter2 / Nest CQRS) bu aşamada **yok** — outbox
 worker (A2c) tabloyu okuyup publish edince in-process subscriber'lar
 tetiklenecek. İki kaynak yok.
 
-<<<<<<< HEAD
 ### Prisma transaction + domain error → accounting loss tuzağı
 
 Bir use case'de "persist etmen gereken bir accounting yazımı" (retry counter,
@@ -143,17 +142,14 @@ if (somethingBad) throw new DomainError();
 - **Refresh reuse cascade revoke** (ADR 0010) — aynı pattern, security
   audit kaybolmasın.
 - **Webhook dedup counter** — gelecek (payment iyzico webhook'ları).
-- **Rate limit counter** — DB tabanlı kaldığı sürece.
+- **Rate limit counter** — A2c-followup'ta Redis'e taşındı, atomic Lua
+  script problemi tamamen çözüyor (rollback semantiği yok).
 
 Supply / booking modüllerinde benzer pattern gelecek (örnek: booking
 state transition fail olursa attempt audit log persist olsun).
 Yeni use case yazarken refleks olarak sor: "throw ediyor muyum? evetse
 counter/log/cascade write'larım ayrı tx'te mi?"
 
-Eğer rate limit veya counter Redis'e taşınırsa atomic Lua script
-problemi tamamen çözer (rollback semantiği yok). ADR 0010 revisit
-trigger.
-=======
 ### RxJS interceptor nested observable tuzağı
 
 `from(Promise<Observable>)` doğrudan stream'e çevrilmez; içeriden çıkan
@@ -190,4 +186,65 @@ testler bu yardımcıdan plaintext code'u alır (DB'de sadece `argon2id` hash
 var). Helper sadece `NODE_ENV === "test"` veya `NODE_ENV === "development"`'da
 çalışır; production'da çağrılırsa throw eder. Production'da gerçek
 `NetgsmSmsSender` SMS atar, plaintext kimsede yoktur.
->>>>>>> 4dec1c6 (feat(config): add jwt, otp and sms env vars)
+
+---
+
+## 2026-04-24 — Session A2c-followup
+
+### BullMQ `maxRetriesPerRequest: null` zorunluluğu
+
+`@nestjs/bullmq` ile Redis bağlantısı kurarken `connection` config'inde
+**`maxRetriesPerRequest: null`** olmazsa BullMQ queue create anında
+"Using the maxRetriesPerRequest is not supported" hatası atar. ioredis
+default'u 20 — BullMQ explicit `null` (sınırsız) bekliyor. Nest
+ConfigModule + `BullModule.forRootAsync` factory'sinde unutmamak için
+`QueueModule` içine yorum bırakıldı.
+
+### Rate limiter anahtar isimlendirme disiplini
+
+Tüm rate limit Redis key'leri `rl:` prefix'iyle başlar. Caller'ın
+sorumluluğu (`apps/api/src/modules/identity/application/use-cases/
+request-otp.use-case.ts` örneğine bak), port'un değil. Aktif key
+aileleri:
+
+- `rl:otp:request:phone:<phone>` — 60sn / 1
+- `rl:otp:request:phone:<phone>:hour` — 3600sn / 5
+- `rl:otp:request:ip:<ip>` — 60sn / 3
+- `rl:otp:verify:phone:<phone>` — 3600sn / 10
+
+Yeni domain (supply, booking, webhook, payment) için: `rl:<feature>:
+<scope>:<value>`. Aynı port impl'i (Redis Lua) tüm aileler için
+çalışır — fresh limiter implementasyonu yazma.
+
+### Outbox worker test izolasyonu
+
+`outbox-drain.integration-spec.ts` Testcontainers Postgres'i auth e2e
+ile paylaşıyor. Auth test'leri çalıştığında 5 identity event (OtpRequested,
+OtpVerified, UserCreated, UserLoggedIn, RefreshTokensIssued) outbox'a
+yazılıyor. Drain spec `beforeEach`'te **TÜM `outbox_events` satırlarını
+sil** (`deleteMany({})`) — `eventType: { startsWith: "test." }` filter'ı
+yetmiyor çünkü drainOnce() tüm pending'i çekiyor. Pattern: pending state
+ölçen entegrasyon testleri kendi tablosunu beforeEach'te wipe etmeli.
+
+### Outbox worker — gerçek BullMQ vs `drainOnce()` direkt çağrı
+
+Worker class (`OutboxWorker`) BullMQ Processor decorator'ıyla; gerçek
+iş `OutboxDrainService.drainOnce()`'da. Test'ler **service'i direkt
+çağırır** — BullMQ scheduler'ı / worker loop'u test etmiyor (BullMQ
+sorumluluğu). Bizim sorumluluğumuz: drain mantığı (read + emit + commit
+
+- retry + abandon). Bu ayrım test'leri deterministic yapıyor — fake
+  timer yok, polling yok.
+
+### `Prisma.sql` raw query
+
+`SELECT ... FOR UPDATE SKIP LOCKED` Prisma client API'sinde yok —
+`tx.\$queryRaw<RowType[]>(Prisma.sql\`...\`)`ile yazılır.`Prisma.sql`
+template tag SQL injection'ı önler (parametreleri prepared statement'e
+çevirir). Tek raw SQL leak noktası outbox worker — kabul edilen ORM
+escape hatch.
+
+Aynı pattern booking dispatch matching (PostGIS distance query),
+catalog category filter (jsonb operator), payment reconcile (window
+function) için tekrarlanacak. Her seferinde yorum satırı bırak: "Why
+raw: <X> is not expressible in Prisma DSL".
