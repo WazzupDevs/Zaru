@@ -21,6 +21,14 @@ enum UserRole {
   SUPPORT
 }
 
+enum OtpChannel {
+  SMS
+}
+
+enum OtpPurpose {
+  LOGIN
+}
+
 model User {
   id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   phoneE164   String    @map("phone_e164")
@@ -52,6 +60,39 @@ model RefreshToken {
 
   @@index([userId])
   @@map("refresh_tokens")
+}
+
+model OtpRequest {
+  id           String     @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  phoneE164    String     @map("phone_e164")
+  codeHash     String     @map("code_hash") // argon2id hash; plaintext NEVER stored
+  channel      OtpChannel @default(SMS)
+  purpose      OtpPurpose @default(LOGIN)
+  expiresAt    DateTime   @map("expires_at")
+  consumedAt   DateTime?  @map("consumed_at") // single-use sentinel
+  attemptCount Int        @default(0) @map("attempt_count")
+  ipAddress    String?    @map("ip_address")
+  userAgent    String?    @map("user_agent")
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+  deletedAt    DateTime?  @map("deleted_at")
+
+  @@index([phoneE164, createdAt])
+  @@index([expiresAt])
+  @@map("otp_requests")
+}
+
+model IdempotencyRecord {
+  key          String   @id // value of Idempotency-Key header
+  requestHash  String   @map("request_hash") // sha256(method + path + canonical body)
+  responseCode Int      @map("response_code")
+  responseBody Json     @map("response_body")
+  userId       String?  @map("user_id") @db.Uuid
+  createdAt    DateTime @default(now()) @map("created_at")
+  expiresAt    DateTime @map("expires_at") // TTL cleanup driven by worker (A2c+)
+
+  @@index([expiresAt])
+  @@map("idempotency_records")
 }
 
 model OutboxEvent {
