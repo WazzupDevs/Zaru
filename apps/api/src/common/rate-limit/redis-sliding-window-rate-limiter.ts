@@ -1,6 +1,7 @@
-import { Injectable } from "@nestjs/common";
+import { Inject, Injectable } from "@nestjs/common";
 import { InjectPinoLogger, PinoLogger } from "nestjs-pino";
 
+import { CLOCK_PORT, type ClockPort } from "../clock/clock.port";
 import { RedisService } from "../redis/redis.service";
 
 import type { RateLimitCheckInput, RateLimitResult, RateLimiterPort } from "./rate-limiter.port";
@@ -55,12 +56,13 @@ export class RedisSlidingWindowRateLimiter implements RateLimiterPort {
 
   constructor(
     private readonly redis: RedisService,
+    @Inject(CLOCK_PORT) private readonly clock: ClockPort,
     @InjectPinoLogger(RedisSlidingWindowRateLimiter.name)
     private readonly logger: PinoLogger,
   ) {}
 
   async check(input: RateLimitCheckInput): Promise<RateLimitResult> {
-    const now = Date.now();
+    const now = this.clock.nowMs();
     const windowMs = input.windowSeconds * 1000;
     // TTL = window + 10s slack so idle keys expire on their own.
     const ttlSec = input.windowSeconds + 10;

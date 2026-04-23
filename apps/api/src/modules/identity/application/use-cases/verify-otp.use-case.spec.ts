@@ -8,12 +8,12 @@ vi.mock("argon2", () => ({
 }));
 
 import { VerifyOtpUseCase } from "./verify-otp.use-case";
+import { FrozenClock } from "../../../../../test/fakes/frozen-clock";
 import { InMemoryRateLimiter } from "../../../../../test/fakes/in-memory-rate-limiter";
 import { InvalidOtpError } from "../../domain/errors/invalid-otp.error";
 import { OtpAlreadyConsumedError } from "../../domain/errors/otp-already-consumed.error";
 import { OtpExpiredError } from "../../domain/errors/otp-expired.error";
 import { OtpNotFoundError } from "../../domain/errors/otp-not-found.error";
-import { type ClockPort } from "../ports/clock.port";
 import {
   type JwtTokenServicePort,
   type RefreshTokenSecret,
@@ -47,7 +47,7 @@ interface Mocks {
   userRepo: UserRepositoryPort;
   refreshRepo: RefreshTokenRepositoryPort;
   jwt: JwtTokenServicePort;
-  clock: ClockPort;
+  clock: FrozenClock;
   outbox: { write: ReturnType<typeof vi.fn> };
   txRunner: { run: ReturnType<typeof vi.fn> };
   rateLimiter: InMemoryRateLimiter;
@@ -142,7 +142,7 @@ function buildMocks(
     hashRefresh: vi.fn().mockReturnValue("refresh-sha256-hash"),
   };
 
-  const clock: ClockPort = { now: () => NOW };
+  const clock = new FrozenClock(NOW);
 
   const outbox = { write: vi.fn().mockResolvedValue(undefined) };
 

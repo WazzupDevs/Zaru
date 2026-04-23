@@ -2,6 +2,7 @@ import { Logger as NestLogger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import { SystemClock } from "../src/common/clock/system-clock";
 import { RedisSlidingWindowRateLimiter } from "../src/common/rate-limit/redis-sliding-window-rate-limiter";
 import { RedisService } from "../src/common/redis/redis.service";
 
@@ -31,7 +32,7 @@ describe("RedisSlidingWindowRateLimiter (Testcontainers)", () => {
       warn: () => undefined,
       error: () => undefined,
     } as unknown as PinoLogger;
-    limiter = new RedisSlidingWindowRateLimiter(redis, noopLogger);
+    limiter = new RedisSlidingWindowRateLimiter(redis, new SystemClock(), noopLogger);
     NestLogger.overrideLogger(false);
   });
 

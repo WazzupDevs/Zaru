@@ -4,6 +4,7 @@ import { Inject, Injectable, Optional } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import * as argon2 from "argon2";
 
+import { CLOCK_PORT, type ClockPort } from "../../../../common/clock/clock.port";
 import {
   RATE_LIMITER_PORT,
   type RateLimiterPort,
@@ -32,7 +33,6 @@ import {
 } from "../../domain/events/user-logged-in.event";
 import { OtpCodeVO } from "../../domain/value-objects/otp-code.vo";
 import { PhoneVO } from "../../domain/value-objects/phone.vo";
-import { CLOCK_PORT, type ClockPort } from "../ports/clock.port";
 import { JWT_TOKEN_SERVICE_PORT, type JwtTokenServicePort } from "../ports/jwt-token.service.port";
 import {
   OTP_REQUEST_REPOSITORY_PORT,

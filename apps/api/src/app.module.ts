@@ -4,6 +4,7 @@ import { APP_FILTER, APP_GUARD } from "@nestjs/core";
 import { LoggerModule } from "nestjs-pino";
 
 import { JwtAuthGuard } from "./common/auth/jwt-auth.guard";
+import { ClockModule } from "./common/clock/clock.module";
 import { EventBusModule } from "./common/events/event-bus.module";
 import { DomainExceptionFilter } from "./common/filters/domain-exception.filter";
 import { HealthModule } from "./common/health/health.module";
@@ -16,6 +17,7 @@ import { RateLimitModule } from "./common/rate-limit/rate-limit.module";
 import { RedisModule } from "./common/redis/redis.module";
 import { RequestContextModule } from "./common/request-context/request-context.module";
 import { type Env, validateEnv } from "./config/env";
+import { CatalogModule } from "./modules/catalog/catalog.module";
 import { IdentityModule } from "./modules/identity/identity.module";
 
 @Module({
@@ -30,6 +32,7 @@ import { IdentityModule } from "./modules/identity/identity.module";
       useFactory: (config: ConfigService<Env, true>) => buildLoggerConfig(config),
     }),
     RequestContextModule,
+    ClockModule,
     PrismaModule,
     RedisModule,
     QueueModule,
@@ -39,6 +42,7 @@ import { IdentityModule } from "./modules/identity/identity.module";
     OutboxModule,
     HealthModule,
     IdentityModule,
+    CatalogModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: DomainExceptionFilter },

@@ -2,6 +2,7 @@ import { ConfigService } from "@nestjs/config";
 import { EventEmitter2 } from "@nestjs/event-emitter";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import { SystemClock } from "../src/common/clock/system-clock";
 import { OutboxDrainService } from "../src/common/outbox/outbox-drain.service";
 import { PrismaService } from "../src/common/prisma/prisma.service";
 
@@ -34,7 +35,7 @@ describe("OutboxDrainService (Testcontainers)", () => {
       warn: () => undefined,
       error: () => undefined,
     } as unknown as PinoLogger;
-    drain = new OutboxDrainService(prisma, events, noopLogger);
+    drain = new OutboxDrainService(prisma, events, new SystemClock(), noopLogger);
   });
 
   afterAll(async () => {

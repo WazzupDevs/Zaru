@@ -3,13 +3,13 @@ import { randomInt } from "node:crypto";
 import { Inject, Injectable } from "@nestjs/common";
 import * as argon2 from "argon2";
 
+import { CLOCK_PORT, type ClockPort } from "../../../../common/clock/clock.port";
 import {
   RATE_LIMITER_PORT,
   type RateLimiterPort,
 } from "../../../../common/rate-limit/rate-limiter.port";
 import { OtpRateLimitedError } from "../../domain/errors/otp-rate-limited.error";
 import { PhoneVO } from "../../domain/value-objects/phone.vo";
-import { CLOCK_PORT, type ClockPort } from "../ports/clock.port";
 import {
   OTP_REQUEST_REPOSITORY_PORT,
   type OtpRequestRepositoryPort,

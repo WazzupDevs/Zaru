@@ -1,5 +1,6 @@
 import { Inject, Injectable } from "@nestjs/common";
 
+import { CLOCK_PORT, type ClockPort } from "../../../../common/clock/clock.port";
 import { RefreshExpiredError } from "../../domain/errors/refresh-expired.error";
 import { RefreshNotFoundError } from "../../domain/errors/refresh-not-found.error";
 import { RefreshReuseDetectedError } from "../../domain/errors/refresh-reuse-detected.error";
@@ -12,7 +13,6 @@ import {
   REFRESH_TOKENS_ISSUED_EVENT_TYPE,
   type RefreshTokensIssuedEventPayload,
 } from "../../domain/events/refresh-tokens-issued.event";
-import { CLOCK_PORT, type ClockPort } from "../ports/clock.port";
 import { JWT_TOKEN_SERVICE_PORT, type JwtTokenServicePort } from "../ports/jwt-token.service.port";
 import { OUTBOX_WRITER_PORT, type OutboxWriterPort } from "../ports/outbox-writer.port";
 import {

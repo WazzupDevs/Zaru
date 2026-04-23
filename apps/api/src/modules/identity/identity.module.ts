@@ -1,6 +1,5 @@
 import { Module, type Type } from "@nestjs/common";
 
-import { CLOCK_PORT } from "./application/ports/clock.port";
 import { JWT_TOKEN_SERVICE_PORT } from "./application/ports/jwt-token.service.port";
 import { OTP_REQUEST_REPOSITORY_PORT } from "./application/ports/otp-request.repository.port";
 import { OUTBOX_WRITER_PORT } from "./application/ports/outbox-writer.port";
@@ -11,7 +10,6 @@ import { USER_REPOSITORY_PORT } from "./application/ports/user.repository.port";
 import { RefreshTokensUseCase } from "./application/use-cases/refresh-tokens.use-case";
 import { RequestOtpUseCase } from "./application/use-cases/request-otp.use-case";
 import { VerifyOtpUseCase } from "./application/use-cases/verify-otp.use-case";
-import { SystemClock } from "./infrastructure/clock/system-clock";
 import { JwtTokenService } from "./infrastructure/jwt/jwt-token.service";
 import { PrismaOtpRequestRepository } from "./infrastructure/persistence/prisma-otp-request.repository";
 import { PrismaOutboxWriter } from "./infrastructure/persistence/prisma-outbox-writer";
@@ -40,7 +38,6 @@ const SmsSenderClass: Type<SmsSenderPort> =
     { provide: OUTBOX_WRITER_PORT, useClass: PrismaOutboxWriter },
     { provide: TX_RUNNER_PORT, useClass: PrismaTxRunner },
     { provide: JWT_TOKEN_SERVICE_PORT, useClass: JwtTokenService },
-    { provide: CLOCK_PORT, useClass: SystemClock },
     { provide: SMS_SENDER_PORT, useClass: SmsSenderClass },
   ],
   exports: [JWT_TOKEN_SERVICE_PORT],

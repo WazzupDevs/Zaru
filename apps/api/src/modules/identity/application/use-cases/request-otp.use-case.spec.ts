@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { RequestOtpUseCase } from "./request-otp.use-case";
+import { FrozenClock } from "../../../../../test/fakes/frozen-clock";
 import { InMemoryRateLimiter } from "../../../../../test/fakes/in-memory-rate-limiter";
 import { InvalidPhoneError } from "../../domain/errors/invalid-phone.error";
 
-import type { ClockPort } from "../ports/clock.port";
 import type {
   OtpRequestRecord,
   OtpRequestRepositoryPort,
@@ -31,7 +31,7 @@ function buildHarness() {
     consume: vi.fn(async () => undefined),
   };
   const sms: SmsSenderPort = { send: vi.fn(async () => undefined) };
-  const clock: ClockPort = { now: () => FIXED_NOW };
+  const clock = new FrozenClock(FIXED_NOW);
   // Real in-memory limiter — exercises the same contract as Redis impl.
   const rateLimiter = new InMemoryRateLimiter(() => FIXED_NOW.getTime());
 

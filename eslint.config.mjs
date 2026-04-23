@@ -19,7 +19,11 @@ export default [
     },
   },
   {
-    files: ["apps/api/**/*.spec.ts", "apps/api/**/*.e2e-spec.ts"],
+    files: [
+      "apps/api/**/*.spec.ts",
+      "apps/api/**/*.e2e-spec.ts",
+      "apps/api/**/*.integration-spec.ts",
+    ],
     rules: {
       "@typescript-eslint/no-explicit-any": "warn",
       "@typescript-eslint/no-unsafe-assignment": "off",
