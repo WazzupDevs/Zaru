@@ -106,6 +106,11 @@ export default [
       // include so projectService can't resolve it. Lint-staged would
       // otherwise crash on commits that touch this file.
       "prisma/**",
+      // apps/admin runs its own next/core-web-vitals lint pipeline via
+      // `next lint`. Excluding here keeps the strict TS rules from
+      // double-flagging Next-generated files (next-env.d.ts triple-slash,
+      // tailwind.config.ts outside projectService include).
+      "apps/admin/**",
     ],
   },
 ];
