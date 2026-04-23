@@ -719,6 +719,170 @@ TODO; A3 availability'sinden önce bitsin).
 
 ---
 
+## 2026-04-23 — Session A3a: Foundations & Catalog
+
+Branch: `feat/supply-catalog` (12 commit, push hazır, PR kullanıcı
+açacak). A3 oturumu üçe bölündü kullanıcı kararı ile (A3a/A3b/A3c).
+Bu A3a — clock altyapısı + catalog modülü + admin scaffold.
+
+### Done
+
+**Clock port (G1)**
+
+- `apps/api/src/common/clock/` global port'ta SystemClock production,
+  FrozenClock test (`apps/api/test/fakes/`) — `set()` + `advance(ms)`.
+- A2c'deki identity-içi `ClockPort` silindi, common'a promote edildi.
+- `RequestOtpUseCase`, `VerifyOtpUseCase`, `RefreshTokensUseCase`:
+  port path'leri common'a yönlendirildi.
+- `OutboxDrainService`: `new Date()` → `clock.now()` (constructor'a
+  CLOCK_PORT inject + drainOnce default arg backward-compat).
+- `RedisSlidingWindowRateLimiter`: `Date.now()` → `clock.nowMs()`.
+- DB defaults (`@default(now())`) ve pino logger time'ı dokunulmadı —
+  audit trail için kanonik DB tarafında, log timeline için pino kendi
+  saatinde.
+- ESLint test overlay `*.integration-spec.ts` pattern'i de kapsayacak
+  şekilde genişletildi.
+- ADR 0014 yazıldı.
+
+**Returning-user e2e (G1d)**
+
+- `apps/api/test/returning-user.integration-spec.ts` — A2c'den open
+  TODO. AppModule'e `overrideProvider(CLOCK_PORT)` ile FrozenClock
+  bağlandı, 2 saat ileri sarılarak aynı phone'la 2 login akışı
+  doğrulandı.
+- Doğrulanan: aynı `userId`, `phoneVerifiedAt` sticky (ilk verify'dan),
+  `lastLoginAt` advance edilmiş clock'ta, her verify'da yeni `familyId`
+  (refresh chain), outbox sayımı (1× UserCreated, 2× UserLoggedIn).
+- Test izolasyonu: distinct phone (`+905559009001`, auth e2e ile
+  çakışmaz), Redis `rl:otp:*` cleanup beforeEach'te.
+
+**Catalog modülü (G2)**
+
+- Schema: `service_categories` + `vehicle_types` +
+  `category_attribute_definitions` (3 enum: ServiceCategoryType,
+  AttributeDataType, AttributeScope). Migration
+  `20260423172347_add_catalog_tables`. UUIDv7 ids, soft-delete
+  `SOFT_DELETE_MODELS` set'ine eklendi.
+- `shared-types/src/catalog/` Zod şemaları: SlugSchema (lowercase
+  kebab-case 2-64), ServiceCategoryTypeSchema, VehicleTypeSchema,
+  AttributeDefinitionSchema, ServiceCategoryDetailSchema. 14 spec
+  case (slug accept/reject + enum coverage).
+- `apps/api/src/modules/catalog/` 4-katman: SlugVO + 2 domain error
+  - ServiceCategoryRepositoryPort + 3 use case (List/Get/ListVehicleTypes)
+  - Prisma repo (nested `include` ile detail) + CatalogController
+    (3 public read endpoint).
+- `@Public()` decorator ile AuthGuard bypass — müşteri uygulaması
+  catalog okumak için login olmaz.
+- Module-level `CLAUDE.md`: polymorphic attribute kontratı
+  (scope=VEHICLE → Vehicle.attributes, scope=BOOKING →
+  Booking.attributes), A3b/A4 implementasyonu için template.
+
+**Seed (G2d)**
+
+- `prisma/seed.ts` idempotent (upsert by slug). 1 ServiceCategory
+  (wedding-car) + 4 VehicleTypes + 5 attribute defs (3 VEHICLE-scope:
+  trim_color enum/has_air_conditioning/has_chauffeur, 2 BOOKING-scope:
+  ceremony_venue/rental_hours).
+- Root `package.json`: `db:seed` script, `tsx@^4` devDep.
+- Prisma `generator { seed = ... }` directive **kullanılmadı** —
+  `migrate reset` yan etkisini istemiyoruz.
+- Production'da da çalışır — wedding-car launch vertical, prod'da da
+  bu kayıt olmalı.
+- `prisma/**` ESLint ignore'a eklendi (seed dosyası tsconfig
+  include'ında değil, projectService bulamıyor → lint-staged crash
+  önlendi).
+
+**Catalog integration tests (G2e)**
+
+- `apps/api/test/catalog.controller.e2e-spec.ts` 6 test: list, detail
+  with nested shape, 404 unknown slug, 400 invalid slug format,
+  soft-delete exclusion, dedicated vehicle-types endpoint.
+- Seed adımı `beforeAll`'da `pnpm db:seed` ile çalışır.
+
+**Admin Next.js scaffold (G6)**
+
+- `apps/admin/` minimal Next.js 15 + React 19 + Tailwind 3.4 +
+  TypeScript 5.6 paketi. App Router, src/app/ layout + globals.css
+  (CSS variables, shadcn-friendly) + placeholder homepage.
+- `next.config.js`: `transpilePackages: ["@event-fleet/shared-types"]`
+  (workspace symlink resolve).
+- Tailwind config shadcn defaults (CSS vars, dark mode via class) ile
+  primed; **shadcn component generation A3c'ye ertelendi** (gerçek
+  ekran yokken `@/components/ui/*` boş gürültü).
+- `apps/admin/.eslintrc.json` (Next 15 hâlâ `next lint` ile çalışıyor;
+  Next 16'da CLI flat'a geçilecek).
+- Root flat ESLint config'in ignore'ına `apps/admin/**` eklendi —
+  admin kendi `next lint` pipeline'ını çalıştırıyor; root strict TS
+  rules `next-env.d.ts` ve Tailwind config'i double-flag ediyordu.
+- `pnpm -r build` admin'i otomatik kapsıyor (turbo `build.outputs`'ta
+  `.next/**`); CI'a ekstra job gerek yok.
+
+### Verification
+
+| Adım                                 | Sonuç                                                         |
+| ------------------------------------ | ------------------------------------------------------------- |
+| `pnpm install --frozen-lockfile`     | OK (Next.js 15 + React 19 + tsx peer-dep uyarı yok)           |
+| `pnpm -r typecheck`                  | OK (3 workspace: shared-types + api + admin)                  |
+| `pnpm -r lint`                       | OK (3 workspace, next lint dahil)                             |
+| `pnpm -r build`                      | OK                                                            |
+| `pnpm --filter shared-types test`    | **36 PASS** (önceki 22'den +14 — catalog spec)                |
+| `pnpm --filter api test` (unit)      | **55 PASS** (önceki 42'den +13 — SlugVO spec)                 |
+| `pnpm --filter api test:integration` | **34 PASS** (önceki 27'den +7 — returning-user 1 + catalog 6) |
+| `pnpm db:seed`                       | OK (wedding-car kategorisi seed edildi)                       |
+
+### Plandan sapmalar (gerekçeli)
+
+1. **shadcn component generation A3a'da YOK.** Brief gerektirdi (button,
+   input, form, card, table). Ben sadece config'leri (Tailwind + CSS
+   vars) hazırladım — gerçek component'leri A3c'ye ertelendi. Sebep:
+   placeholder homepage'de kullanılmayan component dosyaları "neden
+   var?" sorusuna açık. Gerçek ekran (driver approval queue) gelince
+   ihtiyacı olan component'lar `pnpm dlx shadcn@latest add button input
+...` ile bir seferde eklenecek.
+2. **Outbox `drainOnce(now?)` backward-compat.** Brief impl'inde
+   "constructor → clock inject" dedi. Ben `drainOnce(now: Date =
+this.clock.now())` parametre kalıttım — testler hâlâ explicit `now`
+   geçebiliyor (deterministic, BullMQ aşamasını test etmiyoruz). Risk
+   yok; production code zaten `clock.now()` default'unu kullanır.
+3. **Test izolasyon dökümanı dev-notes'a girdi** — brief'te returning-user
+   e2e detayı kısa geçildi; ben Redis `rl:` cleanup ve table cleanup
+   sırasını dev-notes'a yazdım çünkü A3b supply testleri aynı pattern'i
+   takip edecek.
+
+### Next
+
+A3b başlamaya hazır:
+
+- Storage port + MinIO Docker container (R2 fallback) + `mc` init service
+- Supply core: DriverProfile + Vehicle + Document
+- TCKN strict checksum + IBAN argon2 hash + pino redaction `*.nationalId`
+- Admin approval endpoints (`POST /admin/supply/driver-profiles/:id/approve`)
+- ADR 0013 (storage-presigned-upload)
+
+A3b branch: `feat/supply-driver-profiles` (yeni branch, A3a merge sonrası).
+
+A3c kapanışı: Availability + admin bootstrap CLI + ADR 0015 + Faz 1
+"Supply complete".
+
+### Final commit listesi
+
+| #   | Hash        | Konu                                                                         |
+| --- | ----------- | ---------------------------------------------------------------------------- |
+| 1   | `242e097`   | feat(api): promote clock port from identity to common with frozen test fake  |
+| 2   | `c899a3c`   | refactor(api): inject clock port across identity, outbox and rate limiter    |
+| 3   | `179449e`   | test(identity): add returning-user e2e with frozen clock                     |
+| 4   | `542eedd`   | docs: add ADR 0014 clock injection                                           |
+| 5   | `bf7ec2a`   | feat(db): add catalog tables — service category, vehicle type, attribute def |
+| 6   | `d6908df`   | feat(shared-types): add catalog zod schemas                                  |
+| 7   | `186c6d7`   | feat(catalog): implement read-only list and detail endpoints                 |
+| 8   | `ec2e0e3`   | feat(db): add seed script for wedding-car category                           |
+| 9   | `2d913fd`   | docs: add ADR 0012 polymorphic catalog model                                 |
+| 10  | `76fdadb`   | feat(admin): scaffold nextjs 15 app router with tailwind                     |
+| 11  | `5db9cb4`   | docs: update development-notes with a3a gotchas                              |
+| 12  | (bu commit) | docs: log session A3a progress                                               |
+
+---
+
 <!--
 Şablon (yeni oturum buradan başlasın):
 
