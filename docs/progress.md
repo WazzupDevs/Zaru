@@ -536,6 +536,189 @@ Karar kullanıcıya bırakıldı.
 
 ---
 
+## 2026-04-24 — Session A2c-followup: Async Infrastructure
+
+Branch: `feat/async-infrastructure` (10 commit, push hazır, PR kullanıcı
+açacak).
+
+A2c'de "kullanıcı kayıt + giriş" dilimi bitince ertelenen üç altyapı
+borcunu kapattı: Redis sliding-window rate limiter (G6), BullMQ +
+EventEmitter outbox worker (G7), hourly idempotency cleanup (G8).
+Sentry (G10) kasıtlı olarak A4'e ertelendi (prod hazırlığı).
+
+### Done
+
+**Rate limiter port → Redis sliding-window-log**
+
+- `RateLimiterPort` arayüzü (Symbol token + interface — port abstraction
+  disiplini A2c'den devam).
+- `InMemoryRateLimiter` test fake'i `apps/api/test/fakes/` altında —
+  unit testler Redis container açmadan port kontratını exercise ediyor.
+- `RedisSlidingWindowRateLimiter` Lua script + EVALSHA cache + NOSCRIPT
+  reload retry. ZSET-based sliding window, atomic single-roundtrip.
+  Reddedilenler kaydedilmez (flood penceresi anchorlu kalsın).
+- ADR 0011 yazıldı: algorithm seçimi (sliding-log vs fixed/token/leaky),
+  key naming convention (`rl:` prefix, caller-owned), revisit triggers
+  (cluster, distributed regions, NestJS Throttler red gerekçesi).
+- A2c'deki DB count tabanlı rate limit kodu **tamamen silindi**:
+  `OtpRequestRepositoryPort.countByPhoneSince` + `countByIpSince` ve
+  Prisma impl'leri. Ölü kod bırakılmadı.
+- `RequestOtpUseCase` + `VerifyOtpUseCase` rate limiter port'u inject
+  ediyor. Verify'a yeni eklenen koruma: phone başına 10 başarısız
+  verify/saat (`VerifyRateLimitedError` 429 — A2c'de error class vardı,
+  şimdi tetikleyici eklendi).
+
+**BullMQ + EventEmitter altyapısı**
+
+- `QueueModule` (global) — BullModule.forRootAsync, REDIS_URL parse
+  edilip host/port'a açılıyor, `maxRetriesPerRequest: null` (BullMQ
+  zorunluluk; dev-notes'a yazıldı).
+- `EventBusModule` (global) — EventEmitter2 wildcard + `.` delimiter.
+  Subscriber'lar `@OnEvent("identity.*")` ile namespace dinleyebilir.
+- Yeni paketler: `bullmq@^5`, `@nestjs/bullmq@^10`,
+  `@nestjs/event-emitter@^2`, `eventemitter2@^6`.
+
+**Outbox worker**
+
+- `OutboxEvent` schema'sına `nextAttemptAt` (nullable) eklendi +
+  composite index `(processed_at, next_attempt_at, created_at)`.
+  Migration: `20260423160132_outbox_next_attempt`.
+- `OutboxDrainService` (extracted, @Injectable):
+  - `SELECT ... FOR UPDATE SKIP LOCKED LIMIT 50` Prisma raw SQL
+    (`Prisma.sql`) — tek ORM escape hatch, yorumla işaretlendi.
+  - Her event: `events.emitAsync(eventType, payload)` → success'te
+    `processed_at` set, fail'de exponential backoff (`2^retry` saniye,
+    max 1 saat, 10 retry sonra "abandoned" with `last_error` korunur).
+- `OutboxWorker` thin BullMQ Processor — drainOnce()'a delegate.
+  Concurrency 1 (per-aggregate ordering, ADR 0009).
+- `OutboxScheduler` boot'ta repeatable job kayıt ediyor (jobId-pinned),
+  shutdown hook'ta queue close.
+- ADR 0009 yazıldı: polling vs LISTEN/NOTIFY vs CDC tercih, single
+  worker rationale, exponential backoff + abandon, EventEmitter2
+  in-process bus, at-least-once contract (consumer idempotency şart),
+  revisit triggers (lag metric, abandoned event rate).
+- Integration spec (Testcontainers Postgres): happy path, retry
+  scheduling, abandonment at MAX_RETRIES, next_attempt_at gating,
+  BATCH_SIZE pagination, identity-event drain end-to-end (5 identity
+  event'in tamamı bus'tan geçiyor).
+
+**Idempotency TTL cleanup**
+
+- `IdempotencyCleanupService` — hard-delete `expiresAt < now()`
+  satırları. (TTL semantic; soft-delete uygun değil.)
+- `IdempotencyCleanupWorker` (BullMQ Processor) + `IdempotencyCleanup
+Scheduler` (saatlik repeatable + shutdown hook).
+- Integration spec: only-expired-rows-deleted invariant + no-op-on-
+  empty-table.
+
+**Dev-notes**
+
+- ADR 0010 + RxJS bölümlerindeki **çözülmemiş merge marker'lar
+  temizlendi** (main'de yanlışlıkla committed kalmıştı).
+- A2c-followup chapter'ı eklendi: BullMQ maxRetries kuralı, rate
+  limiter key naming, outbox test izolasyonu, drainOnce direct vs
+  worker loop ayrımı, Prisma.sql raw query convention.
+
+### Verification
+
+| Adım                                 | Sonuç                                                            |
+| ------------------------------------ | ---------------------------------------------------------------- |
+| `pnpm install --frozen-lockfile`     | OK (4 yeni dep, peer-dep uyarı yok)                              |
+| `pnpm -r typecheck`                  | OK                                                               |
+| `pnpm -r lint` (max-warnings=0)      | OK                                                               |
+| `pnpm -r build`                      | OK                                                               |
+| `pnpm --filter api test` (unit)      | **42 PASS** (önceki 39'dan +3 — rate limiter port spec)          |
+| `pnpm --filter api test:integration` | **27 PASS** (önceki 14'ten +13 — Redis 5 + outbox 6 + cleanup 2) |
+
+Test ailesi:
+
+- `auth.controller.e2e-spec.ts` — 11 (değişmedi)
+- `app.e2e-spec.ts` — 3 (değişmedi)
+- `redis-rate-limiter.integration-spec.ts` — 5 (yeni; concurrent dispatch
+  Lua atomicity dahil)
+- `outbox-drain.integration-spec.ts` — 6 (yeni; abandon at MAX_RETRIES,
+  next_attempt_at gating dahil)
+- `idempotency-cleanup.integration-spec.ts` — 2 (yeni)
+
+### Plandan sapmalar (gerekçeli)
+
+1. **Outbox worker test'leri fake timers kullanmıyor.** Brief
+   `vi.useFakeTimers()` istiyordu BullMQ scheduling test'i için. Ben
+   `OutboxDrainService.drainOnce()`'ı service'ten çıkarıp **direkt
+   çağırdım** — BullMQ worker loop ve scheduler test edilmiyor (BullMQ
+   sorumluluğu). Bizim sorumluluğumuz drain mantığı (read + emit + commit
+   - retry + abandon). Daha deterministic, fake timer karmaşıklığı yok.
+     ADR 0009 ve dev-notes'ta belirtildi.
+2. **Outbox spec `beforeEach`'te tüm `outbox_events` siliniyor**, sadece
+   `test.*` event'leri değil. Sebep: aynı Testcontainers Postgres'i auth
+   e2e ile paylaşıyor → auth testleri identity event'leri bırakıyor →
+   drainOnce() bunları çekip count'u şişiriyordu. Pattern dev-notes'a
+   eklendi.
+3. **`outboxEvent.nextAttemptAt: null` initial state** seçtim, brief
+   default 0/now önerebilirdi. Sebep: `WHERE next_attempt_at IS NULL OR
+next_attempt_at <= now()` semantic olarak daha açık, "henüz retry
+   schedule olmamış" durumu rakamla değil null ile ifade ediliyor.
+4. **`removeOnComplete: { count: N }`** BullMQ jobs'ı Redis'te tutmamak
+   için (count cap). `true` (hepsini sil) veya `false` (hiç silme)
+   yerine küçük ring buffer — debug için son 50 başarılı job, son 100
+   fail'mış job. Operasyonel kompromis.
+5. **Rate limiter Lua script `math.random()`** kullanıyor unique member
+   üretmek için. Brief'te bu detay yoktu; aynı ms'de iki request olursa
+   ZADD'in overwrite etmesi durumu için. Member format:
+   `<ms>:<rand>`. Atomic, deterministik değil ama uniqueness garanti.
+
+### Pending → A3 (supply başlarken)
+
+- **Clock injection altyapısı** — returning-user e2e + availability
+  testleri için `ClockPort` Nest provider olarak global, test'te
+  `FakeClock` swap.
+- **NetgsmSmsSender gerçek HTTP** + circuit breaker (`opossum`) +
+  İleti Merkezi failover (`PrimaryFallbackSmsSender` zaten yazıldı,
+  henüz wire değil).
+- **Supply modülü:** DriverProfile, Vehicle, Document, Availability.
+- **Catalog modülü:** ServiceCategory + CategoryAttributeDefinition
+  polimorfik model.
+- **Admin panel** Next.js iskeleti (kullanıcı listesi, read-only).
+
+### Pending → A4 (prod hazırlığı)
+
+- **Sentry + OpenTelemetry** kurulumu (G10 ertelendi). DomainError
+  subclass'ları gitmez, unhandled error'lar Sentry'ye, OTEL trace
+  spans request boyunca.
+- **Outbox DLQ tablosu** + alerting (`outbox_events_dead_letter`).
+- **Outbox lag metric** (`min(created_at) WHERE processed_at IS NULL`)
+  → Grafana panel + alert > 30s.
+- **Multi-worker outbox** + aggregate_id partitioning (consistent hash).
+- **`triggered_by_request_id`** outbox event payload'a — RequestContext'ten
+  forensic correlation.
+- **Coolify + Hetzner** deploy pipeline.
+- **NestJS Throttler edge layer** — Cloudflare → nginx → app rate limit
+  zinciri.
+
+### Final commit listesi
+
+| #   | Hash        | Konu                                                             |
+| --- | ----------- | ---------------------------------------------------------------- |
+| 1   | `7bfc503`   | feat(api): add rate limiter port and in-memory fake              |
+| 2   | `0e651bb`   | refactor(identity): use rate limiter port in otp use cases       |
+| 3   | `85eb2ec`   | feat(api): implement redis sliding window rate limiter           |
+| 4   | `5d3684c`   | docs: add ADR 0011 rate limit strategy                           |
+| 5   | `13289b9`   | feat(api): add bullmq and event emitter modules                  |
+| 6   | `5d64c11`   | feat(db): add next_attempt_at to outbox events                   |
+| 7   | `83546d9`   | feat(api): implement outbox worker with bullmq and event emitter |
+| 8   | `1a1d3a3`   | docs: add ADR 0009 outbox worker strategy                        |
+| 9   | `ed1c5c5`   | feat(api): add idempotency records ttl cleanup worker            |
+| 10  | `6533103`   | docs: update development-notes with a2c-followup gotchas         |
+| 11  | (bu commit) | docs: log session A2c-followup progress                          |
+
+### Next
+
+A3 supply modülüne geçiş için onay bekliyor. Önce **clock injection
+altyapısı** ufak bir ısınma olabilir (returning-user e2e A2c'den open
+TODO; A3 availability'sinden önce bitsin).
+
+---
+
 <!--
 Şablon (yeni oturum buradan başlasın):
 
