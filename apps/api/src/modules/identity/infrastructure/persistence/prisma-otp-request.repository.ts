@@ -66,24 +66,6 @@ export class PrismaOtpRequestRepository implements OtpRequestRepositoryPort {
     });
   }
 
-  async countByPhoneSince(phoneE164: string, since: Date): Promise<number> {
-    return this.prisma.client.otpRequest.count({
-      where: {
-        phoneE164,
-        createdAt: { gte: since },
-      },
-    });
-  }
-
-  async countByIpSince(ipAddress: string, since: Date): Promise<number> {
-    return this.prisma.client.otpRequest.count({
-      where: {
-        ipAddress,
-        createdAt: { gte: since },
-      },
-    });
-  }
-
   async findByIdAndPhone(
     tx: TxClient,
     id: string,

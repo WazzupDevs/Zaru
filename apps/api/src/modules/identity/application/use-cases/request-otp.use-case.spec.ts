@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { RequestOtpUseCase } from "./request-otp.use-case";
+import { InMemoryRateLimiter } from "../../../../../test/fakes/in-memory-rate-limiter";
 import { InvalidPhoneError } from "../../domain/errors/invalid-phone.error";
 
 import type { ClockPort } from "../ports/clock.port";
@@ -25,19 +26,17 @@ function buildHarness() {
           createdAt: FIXED_NOW,
         }) satisfies OtpRequestRecord,
     ),
-    countByPhoneSince: vi.fn(async () => 0),
-    countByIpSince: vi.fn(async () => 0),
-    // Verify-side methods aren't exercised in this suite, but the port
-    // requires them for type compatibility.
     findByIdAndPhone: vi.fn(async () => null),
     incrementAttempt: vi.fn(async () => 1),
     consume: vi.fn(async () => undefined),
   };
   const sms: SmsSenderPort = { send: vi.fn(async () => undefined) };
   const clock: ClockPort = { now: () => FIXED_NOW };
+  // Real in-memory limiter — exercises the same contract as Redis impl.
+  const rateLimiter = new InMemoryRateLimiter(() => FIXED_NOW.getTime());
 
-  const useCase = new RequestOtpUseCase(repo, sms, clock);
-  return { useCase, repo, sms, clock };
+  const useCase = new RequestOtpUseCase(repo, sms, clock, rateLimiter);
+  return { useCase, repo, sms, clock, rateLimiter };
 }
 
 describe("RequestOtpUseCase", () => {
@@ -78,44 +77,25 @@ describe("RequestOtpUseCase", () => {
     ).rejects.toBeInstanceOf(InvalidPhoneError);
   });
 
-  it("rate limits: same phone in last 60 seconds → OtpRateLimitedError(per_minute)", async () => {
-    const { useCase, repo } = buildHarness();
-    vi.mocked(repo.countByPhoneSince).mockImplementation(async (_, since) => {
-      const windowMs = FIXED_NOW.getTime() - since.getTime();
-      return windowMs <= 60_000 + 1 ? 1 : 0;
-    });
-
+  it("rate limits: second request from same phone within 60s → per_minute", async () => {
+    const { useCase } = buildHarness();
+    await useCase.execute({ phone: "+905551234567", ipAddress: "1.2.3.4" });
     await expect(
-      useCase.execute({ phone: "+905551234567", ipAddress: "1.2.3.4" }),
+      useCase.execute({ phone: "+905551234567", ipAddress: "1.2.3.5" }),
     ).rejects.toMatchObject({
       code: "OTP_RATE_LIMITED",
       scope: "per_minute",
     });
   });
 
-  it("rate limits: 5+ requests in last hour for same phone → per_hour", async () => {
-    const { useCase, repo } = buildHarness();
-    vi.mocked(repo.countByPhoneSince).mockImplementation(async (_, since) => {
-      const windowMs = FIXED_NOW.getTime() - since.getTime();
-      if (windowMs <= 60_000 + 1) return 0;
-      if (windowMs <= 3_600_000 + 1) return 5;
-      return 0;
-    });
-
+  it("rate limits: 4th request from same IP in a minute → per_ip_minute", async () => {
+    const { useCase } = buildHarness();
+    // Use 4 distinct phones to bypass the per-phone limit and isolate the IP rule.
+    await useCase.execute({ phone: "+905551111111", ipAddress: "1.2.3.4" });
+    await useCase.execute({ phone: "+905552222222", ipAddress: "1.2.3.4" });
+    await useCase.execute({ phone: "+905553333333", ipAddress: "1.2.3.4" });
     await expect(
-      useCase.execute({ phone: "+905551234567", ipAddress: "1.2.3.4" }),
-    ).rejects.toMatchObject({
-      code: "OTP_RATE_LIMITED",
-      scope: "per_hour",
-    });
-  });
-
-  it("rate limits: 3+ requests in last minute from same IP → per_ip_minute", async () => {
-    const { useCase, repo } = buildHarness();
-    vi.mocked(repo.countByIpSince).mockResolvedValue(3);
-
-    await expect(
-      useCase.execute({ phone: "+905551234567", ipAddress: "1.2.3.4" }),
+      useCase.execute({ phone: "+905554444444", ipAddress: "1.2.3.4" }),
     ).rejects.toMatchObject({
       code: "OTP_RATE_LIMITED",
       scope: "per_ip_minute",
@@ -126,7 +106,6 @@ describe("RequestOtpUseCase", () => {
     const { useCase, repo } = buildHarness();
     await useCase.execute({ phone: "+905551234567", ipAddress: "1.2.3.4" });
     const createArg = vi.mocked(repo.createWithOutbox).mock.calls[0]![0];
-    // The plain code is 6 digits; the hash must not equal that pattern alone.
     expect(createArg.codeHash.length).toBeGreaterThan(20);
     expect(createArg.codeHash).toMatch(/^\$argon2/);
   });

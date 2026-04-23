@@ -115,7 +115,12 @@ model OutboxEvent {
   processedAt   DateTime? @map("processed_at")
   retryCount    Int       @default(0) @map("retry_count")
   lastError     String?   @map("last_error")
+  // Worker uses this for exponential-backoff retries:
+  // WHERE processed_at IS NULL AND (next_attempt_at IS NULL OR next_attempt_at <= now())
+  // NULL = ready immediately (initial state).
+  nextAttemptAt DateTime? @map("next_attempt_at")
 
   @@index([processedAt, createdAt])
+  @@index([processedAt, nextAttemptAt, createdAt])
   @@map("outbox_events")
 }

@@ -35,12 +35,6 @@ export interface OtpRequestRepositoryPort {
    */
   createWithOutbox(input: CreateOtpRequestInput): Promise<OtpRequestRecord>;
 
-  /** Count rows for a phone number created at or after `since`. */
-  countByPhoneSince(phoneE164: string, since: Date): Promise<number>;
-
-  /** Count rows from a given IP address created at or after `since`. */
-  countByIpSince(ipAddress: string, since: Date): Promise<number>;
-
   /**
    * Look up an OTP row by (id, phone). Returns null if no row matches —
    * the use case decides whether that's "not found" vs "consumed" vs
