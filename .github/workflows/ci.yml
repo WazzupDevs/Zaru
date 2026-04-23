@@ -94,5 +94,11 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # GitHub Actions job filesystems are isolated; the upstream `build` job's
+      # dist/ folders are not inherited. Vitest resolves
+      # `@event-fleet/shared-types` via package.json `exports` -> `./dist/...`,
+      # so we must build workspace packages here before running tests.
+      - name: Build workspace packages
+        run: pnpm build
       - name: Integration tests
         run: pnpm --filter @event-fleet/api test:integration
