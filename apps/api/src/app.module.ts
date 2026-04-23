@@ -17,6 +17,7 @@ import { QueueModule } from "./common/queue/queue.module";
 import { RateLimitModule } from "./common/rate-limit/rate-limit.module";
 import { RedisModule } from "./common/redis/redis.module";
 import { RequestContextModule } from "./common/request-context/request-context.module";
+import { SecurityModule } from "./common/security/security.module";
 import { StorageModule } from "./common/storage/storage.module";
 import { type Env, validateEnv } from "./config/env";
 import { CatalogModule } from "./modules/catalog/catalog.module";
@@ -37,6 +38,7 @@ import { IdentityModule } from "./modules/identity/identity.module";
     ClockModule,
     PrismaModule,
     PersistenceModule,
+    SecurityModule,
     StorageModule,
     RedisModule,
     QueueModule,
