@@ -110,3 +110,45 @@ ADR 0004'ün uygulama kuralı: domain event yayan use case
 In-memory event bus (EventEmitter2 / Nest CQRS) bu aşamada **yok** — outbox
 worker (A2c) tabloyu okuyup publish edince in-process subscriber'lar
 tetiklenecek. İki kaynak yok.
+
+### Prisma transaction + domain error → accounting loss tuzağı
+
+Bir use case'de "persist etmen gereken bir accounting yazımı" (retry counter,
+audit log, rate limit tick, reuse-detection cascade revoke) ve
+"atabileceğin bir domain error" varsa, bu ikisi aynı transaction'da
+**OLMAMALI**. `throw` Prisma transaction'ını rollback eder, kaydın gider.
+
+**Pattern:** accounting yazımını ayrı kısa transaction'a koy, throw'dan
+ÖNCE commit et; ana iş başka transaction'da dursun.
+
+```ts
+// Yanlış:
+return this.tx.run(async (tx) => {
+  await repo.bumpCounter(tx, ...);   // bu rollback olur
+  if (somethingBad) throw new DomainError();
+});
+
+// Doğru:
+await this.tx.run(async (tx) => {
+  await repo.bumpCounter(tx, ...);   // commit edildi
+});
+if (somethingBad) throw new DomainError();
+```
+
+Örnekler:
+
+- **OTP attempt bump** (ADR 0010) — A2c'de keşfedildi ve fix'lendi.
+  Brute force vektörünü kapatan kritik fix.
+- **Refresh reuse cascade revoke** (ADR 0010) — aynı pattern, security
+  audit kaybolmasın.
+- **Webhook dedup counter** — gelecek (payment iyzico webhook'ları).
+- **Rate limit counter** — DB tabanlı kaldığı sürece.
+
+Supply / booking modüllerinde benzer pattern gelecek (örnek: booking
+state transition fail olursa attempt audit log persist olsun).
+Yeni use case yazarken refleks olarak sor: "throw ediyor muyum? evetse
+counter/log/cascade write'larım ayrı tx'te mi?"
+
+Eğer rate limit veya counter Redis'e taşınırsa atomic Lua script
+problemi tamamen çözer (rollback semantiği yok). ADR 0010 revisit
+trigger.
