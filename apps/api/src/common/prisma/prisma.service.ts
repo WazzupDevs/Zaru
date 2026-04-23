@@ -12,7 +12,14 @@ import type { Env } from "../../config/env";
  *   - OutboxEvent: process-and-forget; soft delete adds noise to worker queries.
  *   - IdempotencyRecord: TTL-driven, deleted by cleanup job (A2c+).
  */
-const SOFT_DELETE_MODELS = new Set<string>(["User", "RefreshToken", "OtpRequest"]);
+const SOFT_DELETE_MODELS = new Set<string>([
+  "User",
+  "RefreshToken",
+  "OtpRequest",
+  "ServiceCategory",
+  "VehicleType",
+  "CategoryAttributeDefinition",
+]);
 
 /**
  * Soft-delete extension.

@@ -124,3 +124,88 @@ model OutboxEvent {
   @@index([processedAt, nextAttemptAt, createdAt])
   @@map("outbox_events")
 }
+
+// =====================================================================
+// Catalog (A3a) — polymorphic vertical model. New verticals (oto kurtarıcı,
+// vale, kurumsal servis) are added by inserting category + attribute defs,
+// not by writing code. See ADR 0012.
+// =====================================================================
+
+enum ServiceCategoryType {
+  PLANNED_EVENT // wedding, engagement — date-reserved
+  ON_DEMAND_DISPATCH // tow, valet — instant
+  SCHEDULED_TRANSPORT // shuttle, corporate — recurring
+}
+
+model ServiceCategory {
+  id            String                        @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  slug          String                        @unique // "wedding-car"
+  name          String // "Düğün Arabası"
+  description   String?
+  type          ServiceCategoryType
+  iconUrl       String?                       @map("icon_url")
+  isActive      Boolean                       @default(true) @map("is_active")
+  sortOrder     Int                           @default(0) @map("sort_order")
+  createdAt     DateTime                      @default(now()) @map("created_at")
+  updatedAt     DateTime                      @updatedAt @map("updated_at")
+  deletedAt     DateTime?                     @map("deleted_at")
+  vehicleTypes  VehicleType[]
+  attributeDefs CategoryAttributeDefinition[]
+
+  @@index([isActive, sortOrder])
+  @@map("service_categories")
+}
+
+model VehicleType {
+  id          String          @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  categoryId  String          @map("category_id") @db.Uuid
+  slug        String // "classic-sedan"
+  name        String // "Klasik Sedan"
+  description String?
+  capacityMin Int             @default(1) @map("capacity_min")
+  capacityMax Int             @map("capacity_max")
+  isActive    Boolean         @default(true) @map("is_active")
+  sortOrder   Int             @default(0) @map("sort_order")
+  createdAt   DateTime        @default(now()) @map("created_at")
+  updatedAt   DateTime        @updatedAt @map("updated_at")
+  deletedAt   DateTime?       @map("deleted_at")
+  category    ServiceCategory @relation(fields: [categoryId], references: [id])
+
+  @@unique([categoryId, slug])
+  @@index([categoryId, isActive, sortOrder])
+  @@map("vehicle_types")
+}
+
+enum AttributeDataType {
+  STRING
+  NUMBER
+  BOOLEAN
+  ENUM
+  DATE
+}
+
+enum AttributeScope {
+  VEHICLE // tied to the vehicle (color, has-AC)
+  BOOKING // tied to the rental (hours of use, ceremony location)
+}
+
+model CategoryAttributeDefinition {
+  id              String            @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  categoryId      String            @map("category_id") @db.Uuid
+  key             String // "trim_color"
+  label           String // "Süsleme Rengi"
+  dataType        AttributeDataType @map("data_type")
+  scope           AttributeScope
+  isRequired      Boolean           @default(false) @map("is_required")
+  enumOptions     Json?             @map("enum_options") // ["white", "red"]
+  validationRules Json?             @map("validation_rules") // {min: 0, max: 100}
+  sortOrder       Int               @default(0) @map("sort_order")
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+  deletedAt       DateTime?         @map("deleted_at")
+  category        ServiceCategory   @relation(fields: [categoryId], references: [id])
+
+  @@unique([categoryId, key, scope])
+  @@index([categoryId, scope, sortOrder])
+  @@map("category_attribute_definitions")
+}
