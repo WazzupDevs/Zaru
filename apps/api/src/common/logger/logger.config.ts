@@ -16,10 +16,14 @@ const REDACT_PATHS = [
   "req.body.password",
   "req.body.phoneE164",
   "req.body.tokenHash",
+  "req.body.refreshToken",
+  "req.body.code",
   "*.phoneE164",
   "*.tokenHash",
+  "*.refreshToken",
   "*.password",
   "*.otp",
+  "*.codeHash",
 ];
 
 const SERVICE_NAME = "event-fleet-api";

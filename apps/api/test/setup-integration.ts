@@ -39,6 +39,16 @@ export async function setup(): Promise<void> {
   process.env.DATABASE_URL = databaseUrl;
   process.env.REDIS_URL = redisUrl;
   process.env.LOG_LEVEL = "warn";
+  // Auth env: deterministic dummies so AppModule's validateEnv passes during
+  // integration runs. Real secrets live only in dev .env / prod secret store.
+  // Length must satisfy the schema (>= 64 chars).
+  process.env.JWT_ACCESS_SECRET ??= "0".repeat(64);
+  process.env.JWT_REFRESH_SECRET ??= "1".repeat(64);
+  process.env.JWT_ACCESS_TTL_SECONDS ??= "900";
+  process.env.JWT_REFRESH_TTL_SECONDS ??= "2592000";
+  process.env.OTP_CODE_TTL_SECONDS ??= "300";
+  process.env.OTP_MAX_VERIFY_ATTEMPTS ??= "5";
+  process.env.SMS_DRIVER ??= "mock";
 
   // Apply migrations against the freshly-started Postgres.
   const repoRoot = path.resolve(__dirname, "..", "..", "..");

@@ -51,5 +51,8 @@
     "*.prisma": [
       "prisma format"
     ]
+  },
+  "volta": {
+    "node": "20.18.0"
   }
 }

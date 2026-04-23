@@ -1,8 +1,9 @@
 import { Module } from "@nestjs/common";
 import { ConfigModule, ConfigService } from "@nestjs/config";
-import { APP_FILTER } from "@nestjs/core";
+import { APP_FILTER, APP_GUARD } from "@nestjs/core";
 import { LoggerModule } from "nestjs-pino";
 
+import { JwtAuthGuard } from "./common/auth/jwt-auth.guard";
 import { DomainExceptionFilter } from "./common/filters/domain-exception.filter";
 import { HealthModule } from "./common/health/health.module";
 import { IdempotencyModule } from "./common/idempotency/idempotency.module";
@@ -31,6 +32,9 @@ import { IdentityModule } from "./modules/identity/identity.module";
     HealthModule,
     IdentityModule,
   ],
-  providers: [{ provide: APP_FILTER, useClass: DomainExceptionFilter }],
+  providers: [
+    { provide: APP_FILTER, useClass: DomainExceptionFilter },
+    { provide: APP_GUARD, useClass: JwtAuthGuard },
+  ],
 })
 export class AppModule {}

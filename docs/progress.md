@@ -344,6 +344,198 @@ Branch: `feat/identity-foundations` (10 commit, push hazır, PR kullanıcı tara
 
 ---
 
+## 2026-04-23 — Session A2c: Authentication Complete
+
+### Done
+
+**Volta + env hijyeni**
+
+- Node 20.18.0 Volta ile pin'lendi (root `package.json` `volta.node`,
+  `apps/api/package.json` `engines`, `.nvmrc` 20.18.0). Dev/CI ABI
+  uyumluluğu garanti.
+- `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET` (`>=64` hex char enforce),
+  `JWT_*_TTL_SECONDS`, `OTP_CODE_TTL_SECONDS`,
+  `OTP_MAX_VERIFY_ATTEMPTS`, `SMS_DRIVER` (`mock`/`netgsm`),
+  `SENTRY_DSN` env şemasına eklendi. `.env.example`, `.env`,
+  `turbo.json` `globalEnv`, `apps/api/test/setup-integration.ts`
+  hepsi senkronize.
+
+**Şema**
+
+- `User`'a `phoneVerifiedAt`, `lastLoginAt`. `RefreshToken`'a `familyId`
+  (NOT NULL, rotation chain root), `userAgent`, `ipAddress` + iki
+  ek index (`familyId`, `userId+revokedAt`). Migration defensive: yeni
+  satırlar transient `gen_random_uuid()` default ile ekleniyor sonra
+  drop default. ADR 0008 referans.
+
+**ADR 0008 — Refresh Token Rotation Strategy**
+
+- Rotation + reuse detection + token family pattern. HS256 JWT access
+  (15 dk), 32-byte base64url refresh (30 g) SHA-256 hash store.
+  Argon2'nin neden refresh'te kullanılmadığı (256-bit random brute force
+  korumasına gerek yok). Race condition + reuse scenario'ları, sliding
+  session/opaque token alternatifleri red gerekçeleri.
+
+**shared-types**
+
+- `OtpVerifySchema` (`phone+requestId+code+optional deviceId`),
+  `AuthUserSummarySchema`, `AuthTokensSchema`,
+  `RefreshTokensRequestSchema`. Spec coverage 22 case (yeni 11).
+
+**Identity domain layer**
+
+- `OtpCodeVO` (whitespace trim + 6-digit) + 7 spec case.
+- 9 yeni domain error: `INVALID_OTP/OTP_EXPIRED/OTP_ALREADY_CONSUMED/
+OTP_NOT_FOUND/OTP_VERIFY_RATE_LIMITED/REFRESH_NOT_FOUND/REFRESH_EXPIRED/
+REFRESH_REUSE_DETECTED/USER_NOT_FOUND` — her biri stable code +
+  HTTP status pin'li.
+- 5 yeni event payload: `OtpVerified`, `UserCreated`, `UserLoggedIn`,
+  `RefreshTokensIssued`, `RefreshReuseDetected`. Hiçbiri OTP code veya
+  refresh plaintext içermiyor (PII discipline).
+
+**Identity application layer (TEST-FIRST)**
+
+- 5 yeni port: `UserRepositoryPort`, `RefreshTokenRepositoryPort`,
+  `JwtTokenServicePort`, `OutboxWriterPort`, `TxRunnerPort`. Her biri
+  Symbol injection token + interface.
+- `OtpRequestRepositoryPort` 3 yeni metot (`findByIdAndPhone`,
+  `incrementAttempt`, `consume`).
+- `VerifyOtpUseCase` + 7 spec case. **Kritik tasarım kararı:**
+  wrong-code attempt-bump ve OTP-burn yazımları **ayrı kısa
+  transaction**'lar — başarısızlık durumunda throw transaction'ı
+  rollback etmesin. Yalnızca success path tek büyük tx (consume +
+  user upsert + token issue + 4 outbox event).
+- `RefreshTokensUseCase` + 5 spec case. Aynı pattern: reuse detection
+  cascade revoke + audit event ayrı tx'te yazılıyor, sonra throw.
+- Toplam unit testler: **39 PASS** (önceki 20'den +19).
+
+**Identity infrastructure**
+
+- `PrismaUserRepository`, `PrismaRefreshTokenRepository`,
+  `PrismaOutboxWriter`, `PrismaTxRunner` — port'larla ve raw $transaction
+  client'la doğru couple.
+- `JwtTokenService` (HS256) — `jsonwebtoken@^9` + `@types/jsonwebtoken`
+  bağımlılıkları eklendi. Refresh için `crypto.randomBytes(32) +
+base64url`, hash için `crypto.createHash('sha256')` (timing-safe
+  compare ihtiyacı yok — DB unique index lookup).
+- `MockSmsSender` static `lastByPhone` map + `_testOnlyGetLast(phone)`
+  - `_testOnlyReset()` helpers (production'da throw).
+- `NetgsmSmsSender` skeleton genişletildi (production TODO listesi +
+  dedicated logger). Gerçek HTTP A3.
+- `PrimaryFallbackSmsSender` decorator yazıldı (henüz wire değil) —
+  A3'te Netgsm + İleti Merkezi chain için hazır.
+
+**API layer**
+
+- `JwtAuthGuard` (global APP_GUARD). `@Public()` decorator route/sınıf
+  bazında bypass; `HealthController` ve auth endpoint'leri `@Public()`.
+  Guard token verify → DB'den fresh User hydrate (deletedAt:null filter)
+  → `req.user` set → `RequestContext.setUserId(...)`.
+- `@CurrentUser()` param decorator (req.user resolve, missing'da
+  `UnauthorizedError` throw).
+- Logger redact list `refreshToken`, `code`, `codeHash` ile genişletildi.
+
+**Auth endpoints**
+
+- `POST /auth/otp/verify` (200, no-store, idempotent) → AuthTokens
+- `POST /auth/tokens/refresh` (200, no-store, NOT idempotent) → AuthTokens
+- `GET /auth/me` (guarded) → AuthUserSummary
+
+**E2E coverage (Testcontainers)**
+
+- 11 test (önceki 5'ten +6). Happy lifecycle: request → verify → /auth/me
+  → refresh → reuse detection. 5 yanlış denemede OTP burn'ünü +
+  6.'sının `OTP_ALREADY_CONSUMED` döndüğünü doğrular (split-tx fix'in
+  regression guard'ı). Reuse detection sonrası rotated-into refresh'in
+  de revoke olduğunu doğrular (cascade). **14 PASS** toplam (3 app.e2e
+  - 11 auth.e2e). 0 fail.
+
+**Verification**
+
+- `pnpm -r typecheck` ✅
+- `pnpm -r lint` ✅ (max-warnings=0)
+- `pnpm -r build` ✅
+- `pnpm -r test` (unit) ✅ — 39 + 22 (shared-types) = 61
+- `pnpm --filter @event-fleet/api test:integration` ✅ — 14 PASS
+
+### Pending (sonraki oturuma)
+
+A2c brief'inden **kapsam dışı bırakılanlar** (zaman + kapsam yönetimi
+için bilinçli tercih, hepsi A2c-followup veya A3'e taşındı):
+
+1. **G6 — OTP rate limit Redis sliding window'a taşıma.** Şu an DB
+   count ile çalışıyor (request başına 3 ek hit). Redis sorted set +
+   atomic Lua script gerekli. A2c-followup.
+2. **G7 — Outbox worker (BullMQ + EventEmitter2 + ADR 0009).** Event'ler
+   `outbox_events` tablosuna yazılıyor ama kimse işlemiyor. `processed_at`
+   IS NULL satırlar birikiyor. A2c-followup. ADR 0009 da o sırada.
+3. **G8 — `IdempotencyRecord` TTL cleanup worker.** Kayıtlar hiç
+   silinmiyor; tablo monoton büyüyor. BullMQ repeatable, A2c-followup.
+4. **G10 — Sentry integration.** `SENTRY_DSN` env şemasında var ama
+   adapter yazılmadı. A2c-followup.
+5. Returning user e2e cases (per-phone 60s rate limit window'da takıldığı
+   için clock injection gerekli).
+
+A3'e taşındı:
+
+1. **NetgsmSmsSender** gerçek HTTP entegrasyonu + circuit breaker.
+2. **PrimaryFallbackSmsSender** wire (Netgsm primary + İleti Merkezi
+   secondary).
+3. Supply modülü (driver profile, vehicle, evrak).
+4. Catalog modülü (ServiceCategory, polimorfik attribute).
+
+### Plandan sapmalar (gerekçeli)
+
+1. **Test + impl tek commit'te.** Brief commit dizilimi 4. (failing
+   tests) ve 5. (impl)'i ayırıyordu; ben birleştirdim. Sebep: spec
+   dosyaları impl'in introduce ettiği port/error sembollerini
+   import ediyor — impl'siz bir commit ESLint `no-unused-vars` +
+   `import/order` ile reddedilir. A2b'de aynı trade-off yapıldı,
+   precedent korunuyor.
+2. **OutboxWriterPort + TxRunnerPort port'ları planda yoktu** ama
+   eklemem gerekti. Verify use case 4 farklı agg'ye yazıyor (OTP +
+   User + RefreshToken + Outbox); use case'in PrismaService'e direkt
+   bağımlı olması (dependency rule ihlali) yerine port abstraction.
+   Test'te mock'lanabilir, swap edilebilir.
+3. **maxAttempts limit'i değiştirildi:** 5 attempt yapan kullanıcının
+   5.'si `consume` ediyor → 6. request `OTP_ALREADY_CONSUMED` (409),
+   plan'da "OtpNotFound" diyordu. 409 daha doğru semantik (404 = "hiç
+   yoktu", 409 = "vardı ama tüketildi").
+4. **G6/G7/G8/G10 ertelendi** (yukarıda detaylı). Auth complete'in
+   core'u (login + verify + JWT + rotation + AuthGuard) bittiği için
+   "Faz 1 kullanıcı kayıt+giriş ayağı tamamlandı" hedefi
+   karşılanıyor; worker + Sentry production gates ama MVP smoke için
+   blocking değil.
+
+### Toolchain notları (gotcha)
+
+- **`vi.spyOn(argon2, "verify")` non-configurable property hatası
+  veriyor** ESM tarafında. Çözüm: file başında `vi.mock("argon2", ...)`
+  ile module-level mock + `vi.mocked(argon2.verify).mockResolvedValue(...)`.
+- **`prisma migrate dev` non-interactive shell'de hâlâ asılı kalıyor.**
+  A1 workaround geçerli: `migrate diff --from-url ... --to-schema-datamodel
+--script` ile SQL üret, manuel klasör + `migrate deploy`.
+- **Tx-içinde-throw rollback tuzağı.** İlk verify use case implementation'ı
+  her şeyi tek `prisma.$transaction` callback'inde yapıyordu; wrong code
+  → throw → rollback → attemptCount güncellenmiyor → OTP brute force'a
+  açık. Çözüm: write path'leri ayrı kısa tx'lere böl. development-notes'a
+  eklenmedi (use case-spesifik), ama gerekirse bir sonraki büyük domain
+  oturumunda "transactional write paths after throw" diye genel kural
+  yazılır.
+
+### Next (A2c-followup veya A3'e geçiş kararı)
+
+Aşağıdakiler A2c'nin doğal devamı:
+
+- **G6/G7/G8/G10**'u A2c-followup tek branch'te bitir — outbox worker
+  kritik, çünkü mevcut event'ler boşa yazılıyor.
+- Veya **A3 supply modülüne** geç ve worker/Sentry'i background ödevi
+  olarak işaretle.
+
+Karar kullanıcıya bırakıldı.
+
+---
+
 <!--
 Şablon (yeni oturum buradan başlasın):
 

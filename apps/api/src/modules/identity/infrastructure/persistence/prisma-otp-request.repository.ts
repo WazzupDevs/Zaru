@@ -9,9 +9,11 @@ import {
 
 import type {
   CreateOtpRequestInput,
+  OtpRequestFullRecord,
   OtpRequestRecord,
   OtpRequestRepositoryPort,
 } from "../../application/ports/otp-request.repository.port";
+import type { TxClient } from "../../application/ports/user.repository.port";
 
 /**
  * Prisma-backed implementation. The `createWithOutbox` method writes the OTP row
@@ -79,6 +81,44 @@ export class PrismaOtpRequestRepository implements OtpRequestRepositoryPort {
         ipAddress,
         createdAt: { gte: since },
       },
+    });
+  }
+
+  async findByIdAndPhone(
+    tx: TxClient,
+    id: string,
+    phoneE164: string,
+  ): Promise<OtpRequestFullRecord | null> {
+    const row = await tx.otpRequest.findFirst({
+      where: { id, phoneE164, deletedAt: null },
+    });
+    if (!row) return null;
+    return {
+      id: row.id,
+      phoneE164: row.phoneE164,
+      channel: "SMS",
+      purpose: "LOGIN",
+      codeHash: row.codeHash,
+      expiresAt: row.expiresAt,
+      consumedAt: row.consumedAt,
+      attemptCount: row.attemptCount,
+      createdAt: row.createdAt,
+    };
+  }
+
+  async incrementAttempt(tx: TxClient, id: string): Promise<number> {
+    const updated = await tx.otpRequest.update({
+      where: { id },
+      data: { attemptCount: { increment: 1 } },
+      select: { attemptCount: true },
+    });
+    return updated.attemptCount;
+  }
+
+  async consume(tx: TxClient, id: string, consumedAt: Date): Promise<void> {
+    await tx.otpRequest.update({
+      where: { id },
+      data: { consumedAt },
     });
   }
 }

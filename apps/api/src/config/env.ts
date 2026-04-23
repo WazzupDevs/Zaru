@@ -6,6 +6,18 @@ export const envSchema = z.object({
   DATABASE_URL: z.string().url(),
   REDIS_URL: z.string().url(),
   LOG_LEVEL: z.enum(["trace", "debug", "info", "warn", "error", "fatal"]).default("info"),
+
+  // --- Authentication (A2c) ---
+  JWT_ACCESS_SECRET: z.string().min(64, "JWT_ACCESS_SECRET must be >= 64 chars (32 bytes hex)"),
+  JWT_REFRESH_SECRET: z.string().min(64, "JWT_REFRESH_SECRET must be >= 64 chars (32 bytes hex)"),
+  JWT_ACCESS_TTL_SECONDS: z.coerce.number().int().positive().default(900),
+  JWT_REFRESH_TTL_SECONDS: z.coerce.number().int().positive().default(2592000),
+  OTP_CODE_TTL_SECONDS: z.coerce.number().int().positive().default(300),
+  OTP_MAX_VERIFY_ATTEMPTS: z.coerce.number().int().positive().default(5),
+
+  SMS_DRIVER: z.enum(["mock", "netgsm"]).default("mock"),
+
+  SENTRY_DSN: z.string().url().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

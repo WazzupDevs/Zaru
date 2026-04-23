@@ -111,6 +111,7 @@ In-memory event bus (EventEmitter2 / Nest CQRS) bu aşamada **yok** — outbox
 worker (A2c) tabloyu okuyup publish edince in-process subscriber'lar
 tetiklenecek. İki kaynak yok.
 
+<<<<<<< HEAD
 ### Prisma transaction + domain error → accounting loss tuzağı
 
 Bir use case'de "persist etmen gereken bir accounting yazımı" (retry counter,
@@ -152,3 +153,41 @@ counter/log/cascade write'larım ayrı tx'te mi?"
 Eğer rate limit veya counter Redis'e taşınırsa atomic Lua script
 problemi tamamen çözer (rollback semantiği yok). ADR 0010 revisit
 trigger.
+=======
+### RxJS interceptor nested observable tuzağı
+
+`from(Promise<Observable>)` doğrudan stream'e çevrilmez; içeriden çıkan
+`Observable`'ı handle etmek için `from(promise).pipe(mergeMap(obs => obs))`
+pattern'i gerekir. A2b idempotency interceptor'ında bu unutulduğunda Nest
+inner observable'ı body olarak serialize etti ama subscribe etmedi → testte
+"replay" yerine her seferinde yeni handler çalıştı.
+
+İlişkili: idempotency persist + lock release sırası **fire-and-forget değil**.
+`tap` yerine `concatMap(async body => { await persist(); await release(); return body; })`
+kullan — aksi halde 2. request 1. request'in persist'i tamamlanmadan girer
+ve `requestHash` collision algılayıp yanlışlıkla 409 döner.
+
+---
+
+## 2026-04-23 — Session A2c
+
+### Volta pin uyumluluğu
+
+Repo `volta.node = "20.18.0"` pin'liyor (root `package.json`). Volta yüklü
+makinede repo dizinine girince otomatik switch olur. Volta yoksa `.nvmrc` +
+`engines.node` düşer. CI'da `actions/setup-node` `node-version` env'i
+20.18.0 olduğu için ABI tutarlılığı garanti.
+
+Yeni Node minor sürümüne geçerken: hem `volta install node@<x.y.z>` +
+`volta pin node@<x.y.z>` koş, hem `.nvmrc` güncelle, hem `apps/api/package.json`
+`engines.node` güncelle, hem `.github/workflows/ci.yml` `NODE_VERSION` güncelle.
+Üçü senkron olmalı.
+
+### `_testOnlyGetLastOtp` helper'ı
+
+`MockSmsSender` test ortamında gönderilen son OTP'yi memory'de tutar; e2e
+testler bu yardımcıdan plaintext code'u alır (DB'de sadece `argon2id` hash
+var). Helper sadece `NODE_ENV === "test"` veya `NODE_ENV === "development"`'da
+çalışır; production'da çağrılırsa throw eder. Production'da gerçek
+`NetgsmSmsSender` SMS atar, plaintext kimsede yoktur.
+>>>>>>> 4dec1c6 (feat(config): add jwt, otp and sms env vars)

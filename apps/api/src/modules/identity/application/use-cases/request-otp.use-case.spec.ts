@@ -27,6 +27,11 @@ function buildHarness() {
     ),
     countByPhoneSince: vi.fn(async () => 0),
     countByIpSince: vi.fn(async () => 0),
+    // Verify-side methods aren't exercised in this suite, but the port
+    // requires them for type compatibility.
+    findByIdAndPhone: vi.fn(async () => null),
+    incrementAttempt: vi.fn(async () => 1),
+    consume: vi.fn(async () => undefined),
   };
   const sms: SmsSenderPort = { send: vi.fn(async () => undefined) };
   const clock: ClockPort = { now: () => FIXED_NOW };

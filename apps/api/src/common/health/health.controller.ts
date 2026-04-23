@@ -3,10 +3,12 @@ import { HealthCheck, HealthCheckService } from "@nestjs/terminus";
 
 import { PrismaHealthIndicator } from "./prisma.health-indicator";
 import { RedisHealthIndicator } from "./redis.health-indicator";
+import { Public } from "../auth/public.decorator";
 
 const SERVICE_NAME = "event-fleet-api";
 const SERVICE_VERSION = "0.0.0";
 
+@Public()
 @Controller()
 export class HealthController {
   constructor(
