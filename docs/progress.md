@@ -249,6 +249,101 @@ Branch: `feat/api-foundation` (8 commit, push hazır, PR kullanıcı tarafından
 
 ---
 
+## 2026-04-23 — Session A2b: Identity Foundations & Shared Types
+
+Branch: `feat/identity-foundations` (10 commit, push hazır, PR kullanıcı tarafından açılacak).
+
+### Done
+
+- **`docs/development-notes.md`** yaratıldı — gotcha defteri (root-level config dosyası
+  tsconfig include, Turbo globalEnv, Prisma+pnpm hoist, `migrate dev` non-interactive,
+  Vitest+SWC, soft-delete extension limit'leri, idempotency endpoint-level kuralı,
+  outbox transaction içi). A2a'dan ileriye taşınan tuzaklar burada toplanıyor.
+- **`packages/shared-types`** paketi ayağa kalktı:
+  - `PhoneE164Schema` (TR mobile only, regex `^\+90(5)\d{9}$`), `UuidSchema`, `PaginationSchema`
+  - `UserRoleSchema` enum, `OtpRequestSchema` + `OtpRequestResponseSchema`, `OtpChannelSchema`, `OtpPurposeSchema`
+  - `ErrorResponseSchema` (API'nin canonical error contract'ı)
+  - 15 unit test PASS (phone 11 case + otp 4 case)
+  - ESM `type: module`, exports map (`./common`, `./identity`, `./errors`)
+  - Build pipeline: `tsc -p tsconfig.build.json` → `dist/`. apps/api root subpath import (`@event-fleet/shared-types`) kullanır; subpath exports (`/common` vs.) klasik moduleResolution'da görünmüyor (apps/api `Node` resolution).
+- **`uuidv7()` SQL fonksiyonu** (RFC 9562, plpgsql) — migration: `prisma/migrations/20260422233945_add_uuidv7/`. Mevcut 3 tablo (`users`, `refresh_tokens`, `outbox_events`) v4'te kalır (ADR 0006). Yeni tablolar `@default(dbgenerated("uuidv7()"))`.
+- **ADR 0006** (UUID v7 adoption) ve **ADR 0007** (Vitest + SWC transformer) yazıldı.
+- **Prisma soft-delete client extension** — `PrismaService.client` getter `findMany/findFirst/count`'a `deletedAt: null` enjekte eder, `delete()` çağrısını soft-delete modellerinde yasaklar (use case'ler explicit `update({ data: { deletedAt: now } })` kullanır). `findUnique`/`update`/`deleteMany` extension'da yok — development-notes.md'de açıklamalı (escape hatch: `findFirst` veya manuel guard).
+- **`OtpRequest`** ve **`IdempotencyRecord`** modelleri Prisma schema'sına eklendi, iki ayrı migration (`20260422234807_add_otp_requests`, `20260422234808_add_idempotency_records`).
+- **IdempotencyInterceptor full implementation** (`apps/api/src/common/idempotency/`):
+  - Redis SETNX lock (TTL 30s) + Postgres `idempotency_records` (TTL 7g)
+  - `requestHash = sha256(method + ":" + path + ":" + canonicalJson(body))`
+  - Replay (same hash) → cached body; collision (different hash) → 409; concurrent → 409
+  - **Endpoint-level** `@UseInterceptors(...)` (A2a'daki global `APP_INTERCEPTOR` kaldırıldı; brief 6.4 zorunlu)
+  - Persist + lock release **handler return etmeden senkron** (concatMap, fire-and-forget değil)
+  - Found+fixed: `from(promise<observable>)` nested observable problemi → `mergeMap` ile flatten
+- **`identity` modülü 4-layer iskelet (TEST-FIRST)**:
+  - `domain/`: `PhoneVO` (Zod-backed VO, `InvalidPhoneError`), `OtpRateLimitedError`, `OtpRequestedEvent`
+  - `application/ports/`: `OtpRequestRepositoryPort`, `SmsSenderPort`, `ClockPort` (token + interface)
+  - `application/use-cases/`: `RequestOtpUseCase` (PhoneVO validate → 3-layer rate limit (per_minute/per_hour/per_ip_minute) → 6-digit `crypto.randomInt` code → `argon2id` hash → `repo.createWithOutbox` → SMS send)
+  - `infrastructure/`: `PrismaOtpRequestRepository` (use case'in `prisma.$transaction` içinde repo+outbox atomic write — ADR 0004), `MockSmsSender` (dev/test, OTP code'u redacted-debug log'lar), `NetgsmSmsSender` (skeleton, A2c TODO), `SystemClock`
+  - `interface/`: `AuthController` `POST /auth/otp/request` (`@HttpCode(202)` + `@UseInterceptors(IdempotencyInterceptor)` + `ZodValidationPipe(RequestOtpDto)`)
+  - Module wiring: NODE_ENV='production' → NetgsmSmsSender, otherwise MockSmsSender
+  - Modül CLAUDE.md (sorumluluklar, event'ler, port'lar, test hedefleri)
+- **TEST-FIRST kanıtı git'te**: `phone.vo.spec.ts` 9 case + `request-otp.use-case.spec.ts` 6 case (rate limit 3 scope, hash format, plaintext leak guard) → 15 unit test, hepsi yeşil.
+- **ESLint layer boundary kuralları** — root `eslint.config.mjs`'e `no-restricted-imports` 3 katman için (domain → application/infrastructure/interface yasak; application → infrastructure/interface yasak; infrastructure → interface yasak). Kanıt: domain'den `application/use-cases/...` import test'i lint'te ADR 0005 mesajıyla yakalandı.
+- **Testcontainers integration suite**:
+  - `vitest.config.integration.ts` ayrı config; `pnpm test:integration` script
+  - `test/setup-integration.ts` global setup → `postgis/postgis:16-3.4` + `redis:7-alpine` containers + `prisma migrate deploy`
+  - `test/auth.controller.e2e-spec.ts` 5 case: 202 happy path, 400 invalid phone, idempotency replay (same key/body → single OTP row), idempotency collision (same key/different body → 409), outbox same-tx kanıtı
+  - `configure-app(app)` helper main.ts + test'lerde paylaşıldı (trust proxy 1, body limit, shutdown hooks)
+  - Toplam integration: 8/8 PASS (3 eski + 5 yeni)
+- **CI** — services kaldırıldı, Testcontainers'a geçildi (lokal/CI parite). Node 20.18.0, pnpm 9.15.0 pin. Job sırası: lint → typecheck → build → test-unit → test-integration (sonuncu öncekilere needs).
+
+### Doğrulama sonuçları
+
+- `pnpm install` → 600+ paket (testcontainers transitive deps), 4 deprecated subdep yoksayıldı.
+- `pnpm typecheck` (root) → 3 workspace tümü exit 0.
+- `pnpm lint` (root) → 3 workspace tümü exit 0, 0 uyarı.
+- `pnpm build` (root) → shared-types + api başarılı.
+- `pnpm test` (unit, root) → **20 / 20 PASS** (logger redaction 5 + identity 15).
+- `pnpm --filter @event-fleet/api test:integration` → **8 / 8 PASS** (app e2e 3 + auth e2e 5).
+- DB doğrulaması (`docker exec ... psql`) — `uuidv7()` çalışıyor (4. grup ilk hane `7`); `otp_requests`, `idempotency_records` tablolar var; tüm migration'lar applied.
+- Soft-delete extension davranış: integration test'lerde `prisma.client.otpRequest.count(...)` rate limit'te kullanılıyor, soft-deleted satırları görmüyor.
+- Outbox kanıt: integration test 5 (`writes OtpRequested to outbox`) `outbox_events` tablosunda `aggregateType: "OtpRequest"`, `eventType: "identity.OtpRequested"`, payload'da `phoneE164` + `channel: "SMS"` var, OTP kodu YOK.
+- ESLint layer kuralı kanıt: domain'den application import denemesi `'../application/use-cases/request-otp.use-case' import is restricted ... ADR 0005` mesajıyla bloklandı.
+
+### Plan'dan sapmalar (gerekçeli)
+
+1. **Volta install YAPILMADI** — kullanıcının manuel kurması bekleniyordu, mesaj sırasında onaylandı ama sonra fiziksel kurulum gelmedi. Tüm doğrulamalar lokal Node 24 + sistem pnpm 9.15 ile çalıştı; CI Node 20.18 pin'inden geçecek. **A2c başında Volta kuruluşu doğrula + `volta` field'ı ekle.**
+2. **In-memory event bus YOK** (önceden onaylı sapma) — outbox tek kaynak; A2c'de worker EventEmitter2 ekleyecek.
+3. **Idempotency interceptor `APP_INTERCEPTOR` (global) → endpoint-level `@UseInterceptors`** (önceden onaylı; brief 6.4 zorunlu).
+4. **ESLint pattern 3 katman için yazıldı** (önceden onaylı).
+5. **Brief commit dizilimi 13 adımdı, ben 10 atomik commit yaptım**:
+   - Volta commit yok (yapılmadı)
+   - Test-first kanıt: brief 8 (failing tests) + 9 (impl) tek `feat(identity)` commit'inde birleşti — pre-commit hook test fail'i tolere etmiyor (lint-staged eslint module resolution domain'den olmayan port'ları "error typed" olarak işaretler), test ayrı bir commit teknik olarak red state'inde olur.
+   - Testcontainers + CI tek commit'te birleşti (ci.yml'i ayrı stage etmeyi unuttum, paket apps/api ile aynı commit'e karıştı).
+6. **Schema'da `output` override KALDIRILDI** A1'de eklenmişti. A2a'da Prisma client'ı default path (root) `node_modules/.pnpm/.../`a generate ediyor; hoist pattern sayesinde resolve OK. Bu A2a'da çözüldü, A2b'de revize gerekmedi (TODO listesinde "schema output override" zaten yok artık).
+
+### Pending (A2c'ye taşınanlar)
+
+- **Volta install** — kullanıcı eylemi; `package.json` root'a `"volta": { "node": "20.18.0", "pnpm": "9.15.0" }` ekleme + `apps/api` `engines` field'ı + temiz reinstall doğrulaması.
+- `POST /auth/otp/verify` (test-first) — `OtpRequest.consumedAt` set, `attempt_count` increment, attempt limit (3 yanlış → invalidate).
+- JWT access (15dk) + refresh rotation (30g, argon2id-hashlı). `RefreshToken` tablosu var ama henüz kullanılmıyor.
+- `AuthGuard` + `@CurrentUser()` decorator, `RequestContextService.setUserId()` controller-level inject.
+- OTP rate limit'in **Redis'e taşınması** (DB count vs Redis sliding window — performans).
+- `IdempotencyRecord` TTL cleanup job (BullMQ repeatable). Şu an 7g sonra orphan satırlar birikir.
+- **Outbox worker** (BullMQ): `WHERE processed_at IS NULL ORDER BY created_at FOR UPDATE SKIP LOCKED` polling + EventEmitter2 in-process publish + retry/backoff (ADR 0004).
+- `NetgsmSmsSender` gerçek implementation (HTTP + circuit breaker + İleti Merkezi failover).
+- Sentry + OpenTelemetry kurulumu (Faz 1 DoD için).
+- Prisma'nın `apps/api/prisma/`'a taşınması (TODO A2a'dan).
+- `@nestjs/platform-express` Express 5 transition (NestJS 11'e geçince).
+
+### Next (A2c önerisi)
+
+1. **Volta kurulumu doğrula + pin** (5 dakika).
+2. **POST /auth/otp/verify** test-first (`VerifyOtpUseCase`, attempt limit, consumed_at sentinel).
+3. **JWT access + refresh rotation** — `User` ve `RefreshToken` tablolarını fiilen kullan, `argon2id` hash ile token store.
+4. **Outbox worker** iskeleti — BullMQ + LISTEN/NOTIFY hibrit veya saf polling.
+5. **AuthGuard** middleware, RequestContext'e userId yaz.
+
+---
+
 <!--
 Şablon (yeni oturum buradan başlasın):
 

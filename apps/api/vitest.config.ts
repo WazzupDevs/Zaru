@@ -2,10 +2,9 @@ import swc from "unplugin-swc";
 import { defineConfig } from "vitest/config";
 
 /**
- * NestJS uses reflect-metadata + experimental decorators for DI.
- * Vitest's default esbuild transformer drops the metadata that
- * `@Injectable()` constructors rely on, so we route TS through SWC
- * with `legacyDecorator + decoratorMetadata` enabled.
+ * Unit-only config (default `pnpm test`). Picks up *.spec.ts under src/
+ * but skips the integration suite under test/. NestJS DI requires SWC's
+ * decorator metadata emission (see ADR 0007).
  */
 export default defineConfig({
   plugins: [
@@ -21,7 +20,7 @@ export default defineConfig({
   test: {
     globals: true,
     environment: "node",
-    include: ["src/**/*.spec.ts", "test/**/*.e2e-spec.ts"],
+    include: ["src/**/*.spec.ts"],
     coverage: {
       provider: "v8",
       reporter: ["text", "html", "lcov"],

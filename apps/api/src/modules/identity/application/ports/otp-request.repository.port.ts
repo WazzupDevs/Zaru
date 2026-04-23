@@ -1,0 +1,35 @@
+export const OTP_REQUEST_REPOSITORY_PORT = Symbol("OTP_REQUEST_REPOSITORY_PORT");
+
+export interface CreateOtpRequestInput {
+  phoneE164: string;
+  codeHash: string;
+  channel: "SMS";
+  purpose: "LOGIN";
+  expiresAt: Date;
+  ipAddress?: string;
+  userAgent?: string;
+}
+
+export interface OtpRequestRecord {
+  id: string;
+  phoneE164: string;
+  channel: "SMS";
+  purpose: "LOGIN";
+  expiresAt: Date;
+  createdAt: Date;
+}
+
+export interface OtpRequestRepositoryPort {
+  /**
+   * Create the OtpRequest row AND the OtpRequested outbox event in a single
+   * transaction. Atomicity is the contract — implementations MUST NOT split
+   * these into two separate transactions.
+   */
+  createWithOutbox(input: CreateOtpRequestInput): Promise<OtpRequestRecord>;
+
+  /** Count rows for a phone number created at or after `since`. */
+  countByPhoneSince(phoneE164: string, since: Date): Promise<number>;
+
+  /** Count rows from a given IP address created at or after `since`. */
+  countByIpSince(ipAddress: string, since: Date): Promise<number>;
+}
