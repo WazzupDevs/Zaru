@@ -1,4 +1,4 @@
-import type { TxClient } from "./user.repository.port";
+import type { TxClient } from "./tx-client";
 
 export const OUTBOX_WRITER_PORT = Symbol("OUTBOX_WRITER_PORT");
 

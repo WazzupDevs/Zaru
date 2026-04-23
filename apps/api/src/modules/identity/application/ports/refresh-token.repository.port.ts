@@ -1,4 +1,4 @@
-import type { TxClient } from "./user.repository.port";
+import type { TxClient } from "../../../../common/persistence/tx-client";
 
 export const REFRESH_TOKEN_REPOSITORY_PORT = Symbol("REFRESH_TOKEN_REPOSITORY_PORT");
 

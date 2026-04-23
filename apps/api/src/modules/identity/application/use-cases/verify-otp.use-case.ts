@@ -6,6 +6,11 @@ import * as argon2 from "argon2";
 
 import { CLOCK_PORT, type ClockPort } from "../../../../common/clock/clock.port";
 import {
+  OUTBOX_WRITER_PORT,
+  type OutboxWriterPort,
+} from "../../../../common/persistence/outbox-writer.port";
+import { TX_RUNNER_PORT, type TxRunnerPort } from "../../../../common/persistence/tx-runner.port";
+import {
   RATE_LIMITER_PORT,
   type RateLimiterPort,
 } from "../../../../common/rate-limit/rate-limiter.port";
@@ -38,12 +43,10 @@ import {
   OTP_REQUEST_REPOSITORY_PORT,
   type OtpRequestRepositoryPort,
 } from "../ports/otp-request.repository.port";
-import { OUTBOX_WRITER_PORT, type OutboxWriterPort } from "../ports/outbox-writer.port";
 import {
   REFRESH_TOKEN_REPOSITORY_PORT,
   type RefreshTokenRepositoryPort,
 } from "../ports/refresh-token.repository.port";
-import { TX_RUNNER_PORT, type TxRunnerPort } from "../ports/tx-runner.port";
 import {
   USER_REPOSITORY_PORT,
   type UserRecord,

@@ -1,4 +1,4 @@
-import type { TxClient } from "./user.repository.port";
+import type { TxClient } from "../../../../common/persistence/tx-client";
 
 export const OTP_REQUEST_REPOSITORY_PORT = Symbol("OTP_REQUEST_REPOSITORY_PORT");
 

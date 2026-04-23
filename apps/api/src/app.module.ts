@@ -11,6 +11,7 @@ import { HealthModule } from "./common/health/health.module";
 import { IdempotencyModule } from "./common/idempotency/idempotency.module";
 import { buildLoggerConfig } from "./common/logger/logger.config";
 import { OutboxModule } from "./common/outbox/outbox.module";
+import { PersistenceModule } from "./common/persistence/persistence.module";
 import { PrismaModule } from "./common/prisma/prisma.module";
 import { QueueModule } from "./common/queue/queue.module";
 import { RateLimitModule } from "./common/rate-limit/rate-limit.module";
@@ -34,6 +35,7 @@ import { IdentityModule } from "./modules/identity/identity.module";
     RequestContextModule,
     ClockModule,
     PrismaModule,
+    PersistenceModule,
     RedisModule,
     QueueModule,
     EventBusModule,
