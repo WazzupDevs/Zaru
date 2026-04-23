@@ -3,8 +3,8 @@ import { defineConfig } from "vitest/config";
 
 /**
  * Integration suite: spins real Postgres + Redis via Testcontainers in the
- * globalSetup, then runs *.e2e-spec.ts files under test/.
- * Run with `pnpm test:integration`.
+ * globalSetup, then runs *.e2e-spec.ts and *.integration-spec.ts files
+ * under test/. Run with `pnpm test:integration`.
  */
 export default defineConfig({
   plugins: [
@@ -20,7 +20,7 @@ export default defineConfig({
   test: {
     globals: true,
     environment: "node",
-    include: ["test/**/*.e2e-spec.ts"],
+    include: ["test/**/*.e2e-spec.ts", "test/**/*.integration-spec.ts"],
     globalSetup: ["./test/setup-integration.ts"],
     testTimeout: 60_000,
     hookTimeout: 60_000,
