@@ -4,11 +4,16 @@ import { Inject, Injectable, Optional } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import * as argon2 from "argon2";
 
+import {
+  RATE_LIMITER_PORT,
+  type RateLimiterPort,
+} from "../../../../common/rate-limit/rate-limiter.port";
 import { type Env } from "../../../../config/env";
 import { InvalidOtpError } from "../../domain/errors/invalid-otp.error";
 import { OtpAlreadyConsumedError } from "../../domain/errors/otp-already-consumed.error";
 import { OtpExpiredError } from "../../domain/errors/otp-expired.error";
 import { OtpNotFoundError } from "../../domain/errors/otp-not-found.error";
+import { VerifyRateLimitedError } from "../../domain/errors/verify-rate-limited.error";
 import {
   OTP_VERIFIED_EVENT_TYPE,
   type OtpVerifiedEventPayload,
@@ -46,6 +51,8 @@ import {
 } from "../ports/user.repository.port";
 
 const DEFAULT_MAX_ATTEMPTS = 5;
+const VERIFY_PHONE_HOUR_LIMIT = 10;
+const VERIFY_PHONE_HOUR_WINDOW_S = 3600;
 
 export interface VerifyOtpInput {
   phone: string;
@@ -93,6 +100,8 @@ export class VerifyOtpUseCase {
     private readonly outbox: OutboxWriterPort,
     @Inject(TX_RUNNER_PORT)
     private readonly tx: TxRunnerPort,
+    @Inject(RATE_LIMITER_PORT)
+    private readonly rateLimiter: RateLimiterPort,
     @Optional() config?: ConfigService<Env, true>,
   ) {
     this.maxAttempts =
@@ -103,6 +112,17 @@ export class VerifyOtpUseCase {
     const phone = PhoneVO.create(input.phone);
     const code = OtpCodeVO.create(input.code);
     const now = this.clock.now();
+
+    // Step 0: rate-limit verify attempts per phone (covers brute-force across
+    // multiple OTP requests). Counted on every entry; not coupled to OTP row.
+    const verifyLimit = await this.rateLimiter.check({
+      key: `rl:otp:verify:phone:${phone.value}`,
+      limit: VERIFY_PHONE_HOUR_LIMIT,
+      windowSeconds: VERIFY_PHONE_HOUR_WINDOW_S,
+    });
+    if (!verifyLimit.allowed) {
+      throw new VerifyRateLimitedError(verifyLimit.retryAfterSeconds ?? 3600);
+    }
 
     // Step 1: read OTP row in its own (read-only) tx so even validation
     // failures get a consistent snapshot.

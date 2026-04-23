@@ -3,6 +3,10 @@ import { randomInt } from "node:crypto";
 import { Inject, Injectable } from "@nestjs/common";
 import * as argon2 from "argon2";
 
+import {
+  RATE_LIMITER_PORT,
+  type RateLimiterPort,
+} from "../../../../common/rate-limit/rate-limiter.port";
 import { OtpRateLimitedError } from "../../domain/errors/otp-rate-limited.error";
 import { PhoneVO } from "../../domain/value-objects/phone.vo";
 import { CLOCK_PORT, type ClockPort } from "../ports/clock.port";
@@ -13,10 +17,14 @@ import {
 import { SMS_SENDER_PORT, type SmsSenderPort } from "../ports/sms-sender.port";
 
 const OTP_TTL_MS = 5 * 60_000;
-const PER_MINUTE_WINDOW_MS = 60_000;
-const PER_HOUR_WINDOW_MS = 60 * 60_000;
-const PER_HOUR_LIMIT = 5;
-const PER_IP_MINUTE_LIMIT = 3;
+
+// Limit / window pairs — see development-notes "Rate limiter anahtarlama disiplini".
+const PHONE_MINUTE_LIMIT = 1;
+const PHONE_MINUTE_WINDOW_S = 60;
+const PHONE_HOUR_LIMIT = 5;
+const PHONE_HOUR_WINDOW_S = 3600;
+const IP_MINUTE_LIMIT = 3;
+const IP_MINUTE_WINDOW_S = 60;
 
 export interface RequestOtpInput {
   phone: string;
@@ -38,13 +46,15 @@ export class RequestOtpUseCase {
     private readonly sms: SmsSenderPort,
     @Inject(CLOCK_PORT)
     private readonly clock: ClockPort,
+    @Inject(RATE_LIMITER_PORT)
+    private readonly rateLimiter: RateLimiterPort,
   ) {}
 
   async execute(input: RequestOtpInput): Promise<RequestOtpResult> {
     const phone = PhoneVO.create(input.phone);
     const now = this.clock.now();
 
-    await this.enforceRateLimits(phone.value, input.ipAddress, now);
+    await this.enforceRateLimits(phone.value, input.ipAddress);
 
     const code = generateOtpCode();
     const codeHash = await argon2.hash(code, { type: argon2.argon2id });
@@ -68,29 +78,32 @@ export class RequestOtpUseCase {
     return { requestId: record.id, expiresAt: record.expiresAt };
   }
 
-  private async enforceRateLimits(phoneE164: string, ipAddress: string, now: Date): Promise<void> {
-    const perMinute = await this.repo.countByPhoneSince(
-      phoneE164,
-      new Date(now.getTime() - PER_MINUTE_WINDOW_MS),
-    );
-    if (perMinute > 0) {
-      throw new OtpRateLimitedError("per_minute", 60);
+  private async enforceRateLimits(phoneE164: string, ipAddress: string): Promise<void> {
+    const phoneMinute = await this.rateLimiter.check({
+      key: `rl:otp:request:phone:${phoneE164}`,
+      limit: PHONE_MINUTE_LIMIT,
+      windowSeconds: PHONE_MINUTE_WINDOW_S,
+    });
+    if (!phoneMinute.allowed) {
+      throw new OtpRateLimitedError("per_minute", phoneMinute.retryAfterSeconds ?? 60);
     }
 
-    const perHour = await this.repo.countByPhoneSince(
-      phoneE164,
-      new Date(now.getTime() - PER_HOUR_WINDOW_MS),
-    );
-    if (perHour >= PER_HOUR_LIMIT) {
-      throw new OtpRateLimitedError("per_hour", 3600);
+    const phoneHour = await this.rateLimiter.check({
+      key: `rl:otp:request:phone:${phoneE164}:hour`,
+      limit: PHONE_HOUR_LIMIT,
+      windowSeconds: PHONE_HOUR_WINDOW_S,
+    });
+    if (!phoneHour.allowed) {
+      throw new OtpRateLimitedError("per_hour", phoneHour.retryAfterSeconds ?? 3600);
     }
 
-    const perIp = await this.repo.countByIpSince(
-      ipAddress,
-      new Date(now.getTime() - PER_MINUTE_WINDOW_MS),
-    );
-    if (perIp >= PER_IP_MINUTE_LIMIT) {
-      throw new OtpRateLimitedError("per_ip_minute", 60);
+    const ipMinute = await this.rateLimiter.check({
+      key: `rl:otp:request:ip:${ipAddress}`,
+      limit: IP_MINUTE_LIMIT,
+      windowSeconds: IP_MINUTE_WINDOW_S,
+    });
+    if (!ipMinute.allowed) {
+      throw new OtpRateLimitedError("per_ip_minute", ipMinute.retryAfterSeconds ?? 60);
     }
   }
 }

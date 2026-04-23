@@ -8,6 +8,7 @@ vi.mock("argon2", () => ({
 }));
 
 import { VerifyOtpUseCase } from "./verify-otp.use-case";
+import { InMemoryRateLimiter } from "../../../../../test/fakes/in-memory-rate-limiter";
 import { InvalidOtpError } from "../../domain/errors/invalid-otp.error";
 import { OtpAlreadyConsumedError } from "../../domain/errors/otp-already-consumed.error";
 import { OtpExpiredError } from "../../domain/errors/otp-expired.error";
@@ -49,6 +50,7 @@ interface Mocks {
   clock: ClockPort;
   outbox: { write: ReturnType<typeof vi.fn> };
   txRunner: { run: ReturnType<typeof vi.fn> };
+  rateLimiter: InMemoryRateLimiter;
 }
 
 function buildOtpRow(overrides: Partial<OtpRequestFullRecord> = {}): OtpRequestFullRecord {
@@ -92,8 +94,6 @@ function buildMocks(
 
   const otpRepo: OtpRequestRepositoryPort = {
     createWithOutbox: vi.fn(),
-    countByPhoneSince: vi.fn().mockResolvedValue(0),
-    countByIpSince: vi.fn().mockResolvedValue(0),
     findByIdAndPhone: vi.fn().mockResolvedValue(otpRow),
     incrementAttempt: vi.fn().mockResolvedValue((otpRow?.attemptCount ?? 0) + 1),
     consume: vi.fn().mockResolvedValue(undefined),
@@ -154,7 +154,9 @@ function buildMocks(
     run: vi.fn().mockImplementation(async <T>(fn: (tx: TxClient) => Promise<T>) => fn(fakeTx)),
   };
 
-  return { otpRepo, userRepo, refreshRepo, jwt, clock, outbox, txRunner };
+  const rateLimiter = new InMemoryRateLimiter(() => NOW.getTime());
+
+  return { otpRepo, userRepo, refreshRepo, jwt, clock, outbox, txRunner, rateLimiter };
 }
 
 function buildUseCase(m: Mocks): VerifyOtpUseCase {
@@ -166,6 +168,7 @@ function buildUseCase(m: Mocks): VerifyOtpUseCase {
     m.clock,
     m.outbox,
     m.txRunner,
+    m.rateLimiter,
   );
 }
 
