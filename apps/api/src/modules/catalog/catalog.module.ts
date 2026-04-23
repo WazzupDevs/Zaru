@@ -18,5 +18,9 @@ import { CatalogController } from "./interface/controllers/catalog.controller";
       useClass: PrismaServiceCategoryRepository,
     },
   ],
+  // Supply needs the repository to validate vehicle attributes against the
+  // category's polymorphic definitions; export the port to avoid duplicating
+  // catalog reads inside supply.
+  exports: [SERVICE_CATEGORY_REPOSITORY_PORT],
 })
 export class CatalogModule {}
