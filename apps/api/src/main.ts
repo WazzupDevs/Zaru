@@ -5,8 +5,7 @@ import { NestExpressApplication } from "@nestjs/platform-express";
 import { Logger } from "nestjs-pino";
 
 import { AppModule } from "./app.module";
-
-const BODY_LIMIT = "1mb";
+import { configureApp } from "./configure-app";
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
@@ -14,10 +13,7 @@ async function bootstrap(): Promise<void> {
   });
 
   app.useLogger(app.get(Logger));
-  app.set("trust proxy", 1);
-  app.useBodyParser("json", { limit: BODY_LIMIT });
-  app.useBodyParser("urlencoded", { extended: true, limit: BODY_LIMIT });
-  app.enableShutdownHooks();
+  configureApp(app);
 
   const port = Number(process.env.PORT ?? 3000);
   await app.listen(port);

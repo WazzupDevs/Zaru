@@ -1,13 +1,14 @@
-import { INestApplication } from "@nestjs/common";
+import { NestExpressApplication } from "@nestjs/platform-express";
 import { Test } from "@nestjs/testing";
 import { Logger } from "nestjs-pino";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { AppModule } from "../src/app.module";
+import { configureApp } from "../src/configure-app";
 
 describe("App e2e", () => {
-  let app: INestApplication;
+  let app: NestExpressApplication;
 
   beforeAll(async () => {
     process.env.NODE_ENV = "test";
@@ -19,8 +20,9 @@ describe("App e2e", () => {
       imports: [AppModule],
     }).compile();
 
-    app = moduleRef.createNestApplication({ bufferLogs: true });
+    app = moduleRef.createNestApplication<NestExpressApplication>({ bufferLogs: true });
     app.useLogger(app.get(Logger));
+    configureApp(app);
     await app.init();
   });
 

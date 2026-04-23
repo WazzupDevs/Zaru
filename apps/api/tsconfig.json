@@ -12,6 +12,6 @@
     "moduleResolution": "Node",
     "verbatimModuleSyntax": false
   },
-  "include": ["src/**/*", "test/**/*", "vitest.config.ts"],
+  "include": ["src/**/*", "test/**/*", "vitest.config.ts", "vitest.config.integration.ts"],
   "exclude": ["node_modules", "dist"]
 }
