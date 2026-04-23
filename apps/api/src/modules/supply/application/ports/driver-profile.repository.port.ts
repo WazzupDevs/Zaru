@@ -45,7 +45,7 @@ export interface DriverProfileRepositoryPort {
   updateBasics(
     tx: TxClient,
     id: string,
-    input: { firstName?: string; lastName?: string },
+    input: { firstName?: string | undefined; lastName?: string | undefined },
   ): Promise<void>;
   setStatus(
     tx: TxClient,

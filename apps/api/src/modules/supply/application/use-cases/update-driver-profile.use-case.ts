@@ -10,8 +10,8 @@ import {
 } from "../ports/driver-profile.repository.port";
 
 export interface UpdateDriverProfileInput {
-  firstName?: string;
-  lastName?: string;
+  firstName?: string | undefined;
+  lastName?: string | undefined;
 }
 
 @Injectable()
