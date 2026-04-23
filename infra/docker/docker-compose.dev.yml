@@ -1,4 +1,4 @@
-# Local development stack: Postgres (with PostGIS) and Redis.
+# Local development stack: Postgres (with PostGIS), Redis and MinIO (S3-compatible).
 # Start: pnpm db:up
 # Stop:  pnpm db:down
 # Wipe:  pnpm db:nuke   (removes volumes — destroys local data)
@@ -43,6 +43,49 @@ services:
       retries: 10
       start_period: 5s
 
+  # S3-compatible object storage for dev. Production uses Cloudflare R2 with
+  # the same SDK (@aws-sdk/client-s3) — only endpoint + credentials change.
+  # Image is pinned to a specific RELEASE tag (no `latest`) for CI determinism.
+  minio:
+    image: quay.io/minio/minio:RELEASE.2024-10-13T13-34-11Z
+    container_name: event-fleet-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${STORAGE_ACCESS_KEY_ID:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${STORAGE_SECRET_ACCESS_KEY:-minioadmin}
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # Web console (http://localhost:9001)
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  # One-shot bucket bootstrap. Creates the dev bucket and opens anonymous
+  # download access (so the `publicUrl` returned by presigned uploads is
+  # actually browsable in dev). Production buckets in R2 are configured via
+  # the dashboard / Terraform — no `mc` step there.
+  minio-init:
+    image: quay.io/minio/mc:RELEASE.2024-10-08T09-37-26Z
+    container_name: event-fleet-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        mc alias set local http://minio:9000 ${STORAGE_ACCESS_KEY_ID:-minioadmin} ${STORAGE_SECRET_ACCESS_KEY:-minioadmin} &&
+        mc mb --ignore-existing local/${STORAGE_BUCKET:-eventfleet-dev-uploads} &&
+        mc anonymous set download local/${STORAGE_BUCKET:-eventfleet-dev-uploads} &&
+        echo "MinIO bucket ${STORAGE_BUCKET:-eventfleet-dev-uploads} ready"
+
 volumes:
   pgdata:
   redisdata:
+  miniodata:

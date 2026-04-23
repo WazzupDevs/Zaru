@@ -3,6 +3,7 @@ import { HealthCheck, HealthCheckService } from "@nestjs/terminus";
 
 import { PrismaHealthIndicator } from "./prisma.health-indicator";
 import { RedisHealthIndicator } from "./redis.health-indicator";
+import { StorageHealthIndicator } from "./storage.health-indicator";
 import { Public } from "../auth/public.decorator";
 
 const SERVICE_NAME = "event-fleet-api";
@@ -15,6 +16,7 @@ export class HealthController {
     private readonly health: HealthCheckService,
     private readonly prisma: PrismaHealthIndicator,
     private readonly redis: RedisHealthIndicator,
+    private readonly storage: StorageHealthIndicator,
   ) {}
 
   /**
@@ -36,6 +38,7 @@ export class HealthController {
     return this.health.check([
       () => this.prisma.pingCheck("postgres"),
       () => this.redis.pingCheck("redis"),
+      () => this.storage.pingCheck("storage"),
     ]);
   }
 

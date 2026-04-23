@@ -18,6 +18,28 @@ export const envSchema = z.object({
   SMS_DRIVER: z.enum(["mock", "netgsm"]).default("mock"),
 
   SENTRY_DSN: z.string().url().optional(),
+
+  // --- PII hashing (A3b) ---
+  // HMAC-SHA256 secret for deterministic TCKN hashing. Admin search needs
+  // determinism; rotation is a multi-step migration (dual-write window).
+  // Generate: `openssl rand -hex 32`. Min 64 hex chars.
+  PII_HMAC_SECRET: z.string().min(64, "PII_HMAC_SECRET must be >= 64 chars (32 bytes hex)"),
+
+  // --- Object storage (A3b) ---
+  // S3-compatible. Dev = MinIO (docker compose), prod = Cloudflare R2.
+  // Same SDK (@aws-sdk/client-s3), differs only in endpoint + credentials.
+  STORAGE_PROVIDER: z.enum(["minio", "r2"]).default("minio"),
+  STORAGE_ENDPOINT: z.string().url(),
+  STORAGE_ACCESS_KEY_ID: z.string().min(1),
+  STORAGE_SECRET_ACCESS_KEY: z.string().min(1),
+  STORAGE_BUCKET: z.string().min(1),
+  STORAGE_REGION: z.string().default("auto"),
+  STORAGE_FORCE_PATH_STYLE: z.coerce.boolean().default(true),
+  // Public URL prefix used to compose post-upload object URLs.
+  STORAGE_PUBLIC_URL: z.string().url(),
+  // Hard upper bound enforced via presigned PUT Content-Length signing.
+  // Client cannot bypass — S3 reject the upload.
+  STORAGE_MAX_FILE_SIZE_BYTES: z.coerce.number().int().positive().default(15728640),
 });
 
 export type Env = z.infer<typeof envSchema>;
