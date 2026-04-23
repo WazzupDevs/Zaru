@@ -23,7 +23,8 @@
     "db:generate": "prisma generate --schema prisma/schema.prisma",
     "db:migrate": "prisma migrate dev --schema prisma/schema.prisma",
     "db:studio": "prisma studio --schema prisma/schema.prisma",
-    "db:reset": "prisma migrate reset --schema prisma/schema.prisma"
+    "db:reset": "prisma migrate reset --schema prisma/schema.prisma",
+    "db:seed": "tsx prisma/seed.ts"
   },
   "devDependencies": {
     "@commitlint/cli": "^19.6.0",
@@ -34,6 +35,7 @@
     "lint-staged": "^15.2.0",
     "prettier": "^3.4.0",
     "prisma": "^5.22.0",
+    "tsx": "4",
     "turbo": "^2.3.0",
     "typescript": "^5.6.0"
   },

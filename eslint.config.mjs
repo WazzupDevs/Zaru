@@ -102,6 +102,10 @@ export default [
       "**/dist/**",
       "**/.turbo/**",
       "**/coverage/**",
+      // Seed runs via tsx with its own loader; not part of any tsconfig
+      // include so projectService can't resolve it. Lint-staged would
+      // otherwise crash on commits that touch this file.
+      "prisma/**",
     ],
   },
 ];
