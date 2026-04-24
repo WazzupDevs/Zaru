@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { RefreshTokensUseCase } from "./refresh-tokens.use-case";
+import { FrozenClock } from "../../../../../test/fakes/frozen-clock";
 import { RefreshExpiredError } from "../../domain/errors/refresh-expired.error";
 import { RefreshNotFoundError } from "../../domain/errors/refresh-not-found.error";
 import { RefreshReuseDetectedError } from "../../domain/errors/refresh-reuse-detected.error";
 import { UserNotFoundError } from "../../domain/errors/user-not-found.error";
-import { type ClockPort } from "../ports/clock.port";
 import {
   type JwtTokenServicePort,
   type RefreshTokenSecret,
@@ -107,7 +107,7 @@ function buildMocks(
     hashRefresh: vi.fn().mockReturnValue("sha256-of-incoming"),
   };
 
-  const clock: ClockPort = { now: () => NOW };
+  const clock = new FrozenClock(NOW);
   const outbox = { write: vi.fn().mockResolvedValue(undefined) };
   const fakeTx = {} as TxClient;
   const txRunner = {

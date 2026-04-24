@@ -248,3 +248,106 @@ Aynı pattern booking dispatch matching (PostGIS distance query),
 catalog category filter (jsonb operator), payment reconcile (window
 function) için tekrarlanacak. Her seferinde yorum satırı bırak: "Why
 raw: <X> is not expressible in Prisma DSL".
+
+---
+
+## 2026-04-23 — Session A3a
+
+### ClockPort her yerde inject — `new Date()` yasak
+
+`apps/api/src/common/clock/` altında global ClockPort. Identity, outbox
+worker, rate limiter — hepsi `clock.now()` / `clock.nowMs()` çağırır.
+Application code'da `new Date()` veya `Date.now()` görmek = code review
+red flag. ADR 0014.
+
+İstisna: DB-side timestamp'ler (Prisma `@default(now())`) ve logger
+timestamp'i (pino kendisi koyar). Audit trail için DB now() kanonik —
+clock injection oraya sızdırılmaz.
+
+Test override:
+
+```ts
+const clock = new FrozenClock(new Date("2026-04-23T08:00:00Z"));
+const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+  .overrideProvider(CLOCK_PORT)
+  .useValue(clock)
+  .compile();
+clock.advance(2 * 60 * 60 * 1000);
+```
+
+### Returning-user e2e izolasyon kuralları
+
+Aynı phone'la iki kez login eden e2e (Testcontainers Postgres + shared
+Redis):
+
+1. **Phone'u diğer suite'lerle ÇAKIŞTIRMA** — auth.controller.e2e
+   `+905559001001`'i kullanıyor; returning-user `+905559009001`'e geçti.
+   Yoksa Redis rate limit kalıntısı 429 üretir.
+2. **`beforeEach`'te Redis `rl:otp:*` key'lerini temizle.** Test'ler
+   arası Redis state taşması rate limit decision'ları bozar.
+3. **Tablo cleanup sırası:** RefreshToken → OtpRequest → User (FK).
+   OutboxEvent ayrı (FK yok ama ilgili aggregate'lere göre filtrele).
+
+Pattern dosyası: `apps/api/test/returning-user.integration-spec.ts`.
+
+### Polymorphic Catalog: scope=VEHICLE vs scope=BOOKING attribute'lar
+
+CategoryAttributeDefinition iki farklı yere bağlanır:
+
+- `scope=VEHICLE` → `Vehicle.attributes` JSONB. Sürücü araç register'larken
+  doldurur (renk, klima, vs).
+- `scope=BOOKING` → `Booking.attributes` JSONB. Müşteri rezervasyon
+  yaparken doldurur (tören yeri, kiralama saati, vs).
+
+Aynı kategori için her iki scope'tan attribute olabilir. Vehicle register
+ve Booking create use case'leri ayrı Zod schema üretir (definition'ları
+filter scope'a göre). A3b/A4 implementasyonu için template hazır:
+`apps/api/src/modules/catalog/CLAUDE.md`.
+
+### Seed script Prisma `generator client { seed = ... }` ile değil, package script ile
+
+Schema'da `seed` directive yerine root `package.json`'a `"db:seed": "tsx
+prisma/seed.ts"` eklendi. Sebep: schema'daki seed config'i sadece
+`prisma db seed` komutunu yapılandırır; biz `pnpm db:seed` ile direkt
+çağırıyoruz, daha şeffaf. Ayrıca `seed` directive Prisma'nın migrate
+reset akışıyla otomatik tetiklenir — istemediğimiz bir yan etki
+(reset = migration replay, seed her zaman istemiyoruz).
+
+`tsx` runner root devDep olarak eklendi (`tsx@^4`).
+
+### Catalog seed: idempotent, upsert tabanlı
+
+`prisma/seed.ts` her şeyi `upsert` yapıyor (slug bazlı). Re-run güvenli.
+Production'da `pnpm db:seed` çalıştırılırsa wedding-car kategorisi
+zaten varsa dokunmaz — production "shipped categories" için de bu seed
+geçerli (tek vertical başlangıçta, A4'te admin panelden eklenir).
+
+### Next.js workspace integration: `transpilePackages`
+
+Admin app `apps/admin` `@event-fleet/shared-types` paketini import
+ediyor. Workspace symlink'i `dist/` ESM'i işaret ediyor. Next 15
+default bundler bunu transpile etmez → import resolution fails.
+Çözüm: `next.config.js` `transpilePackages: ["@event-fleet/shared-types"]`.
+
+Yeni workspace package eklendiğinde admin'den import edilecekse listeye
+eklenmesi şart.
+
+### `apps/admin` lint: Next.js kendi config'iyle
+
+Root `eslint.config.mjs` flat config sadece `apps/api/**` glob'unu
+hedefler. Admin'in kendi `.eslintrc.json` (legacy format, `next lint`
+zorunlu kıldığı için) `next/core-web-vitals + next/typescript`
+extends'leriyle çalışır. `pnpm -r lint` her workspace'in lint
+script'ini çağırır → admin için `next lint --max-warnings=0`.
+
+Next 16'da `next lint` deprecated; CLI'a geçiş gerektiğinde admin
+ESLint config flat'a taşınır, root flat config'in admin scope'u eklenir.
+
+### tsx + tsconfig.json yeni include
+
+Root'a `prisma/seed.ts` eklendi. Eğer ileride root tsconfig include
+dizisinde `prisma/**` yoksa, ESLint projectService eklenirse "file not
+in project" hatası gelir. Şu an root-level tsconfig.json yok (her
+package kendi tsconfig'ini yönetiyor); seed dosyası `tsx` ile çalışıyor
+(kendi internal tsconfig). ESLint root flat config seed'i lint etmiyor
+çünkü `apps/api/**` ve `packages/shared-types/**` dışında — kabul.

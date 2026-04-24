@@ -1,9 +1,10 @@
-import { Injectable } from "@nestjs/common";
+import { Inject, Injectable } from "@nestjs/common";
 import { EventEmitter2 } from "@nestjs/event-emitter";
 import { Prisma } from "@prisma/client";
 import { InjectPinoLogger, PinoLogger } from "nestjs-pino";
 
 import { OUTBOX_BATCH_SIZE, OUTBOX_MAX_RETRIES } from "./outbox.constants";
+import { CLOCK_PORT, type ClockPort } from "../clock/clock.port";
 import { PrismaService } from "../prisma/prisma.service";
 
 /**
@@ -26,12 +27,17 @@ export class OutboxDrainService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly events: EventEmitter2,
+    @Inject(CLOCK_PORT) private readonly clock: ClockPort,
     @InjectPinoLogger(OutboxDrainService.name)
     private readonly logger: PinoLogger,
   ) {}
 
-  /** Returns the number of events looked at in this pass. */
-  async drainOnce(now: Date = new Date()): Promise<number> {
+  /**
+   * Returns the number of events looked at in this pass. The optional
+   * `now` arg is here so tests can pass a fixed instant; in production
+   * the clock port supplies it.
+   */
+  async drainOnce(now: Date = this.clock.now()): Promise<number> {
     return this.prisma.$transaction(async (tx) => {
       const rows = await tx.$queryRaw<OutboxRow[]>(Prisma.sql`
         SELECT id, aggregate_type, aggregate_id, event_type, payload, retry_count
