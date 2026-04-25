@@ -109,6 +109,9 @@ export default [
       // Admin / ops CLI scripts run via tsx outside of any tsconfig include
       // — same projectService friction as seed.
       "apps/api/scripts/**",
+      // tsup config runs via tsup CLI's own loader, not part of any
+      // tsconfig include — same projectService friction as seed.ts.
+      "**/tsup.config.ts",
       // apps/admin runs its own next/core-web-vitals lint pipeline via
       // `next lint`. Excluding here keeps the strict TS rules from
       // double-flagging Next-generated files (next-env.d.ts triple-slash,

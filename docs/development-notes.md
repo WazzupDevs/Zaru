@@ -354,6 +354,92 @@ package kendi tsconfig'ini yönetiyor); seed dosyası `tsx` ile çalışıyor
 
 ---
 
+## 2026-04-25 — Shared-types dual-format hotfix
+
+### Problem
+
+`packages/shared-types` ESM-only yapılandırılmıştı (`"type": "module"` +
+`exports.import` sadece). Vitest (ESM-native) testlerde sorunsuz çalışıyordu,
+ama `pnpm --filter @event-fleet/api dev` runtime'da CJS loader kullandığı için
+`ERR_PACKAGE_PATH_NOT_EXPORTED` atıyordu:
+
+```
+Error [ERR_PACKAGE_PATH_NOT_EXPORTED]: No "exports" main defined in
+.../shared-types/package.json
+    at packageExportsResolve (node:internal/modules/esm/resolve:594:13)
+    ...
+    at Object.<anonymous> (apps/api/src/modules/catalog/domain/value-objects/slug.vo.ts:1:1)
+    at Module._compile (node:internal/modules/cjs/loader:1469:14)
+```
+
+CI'da yakalanmadı çünkü integration test'ler de Vitest üzerinden ESM'de
+koşuyor — gerçek `nest start` runtime sadece `pnpm dev` ile devreye giriyor.
+
+### Çözüm
+
+tsup ile dual-format build (ESM + CJS aynı paket içinde). `exports` field'ı
+`import` ve `require` koşullarına ayrıldı; consumer hangi modül sistemini
+kullanıyorsa Node otomatik doğru dosyayı seçer.
+
+```
+dist/
+  index.js / index.cjs / index.d.ts / index.d.cts (+ source maps)
+  common/index.{js,cjs,d.ts,d.cts}
+  identity/index.{js,cjs,d.ts,d.cts}
+  errors/index.{js,cjs,d.ts,d.cts}
+```
+
+`"type": "module"` korundu (silmek istemiştik ama tsup `.js` ESM yazdığı
+için Node'un extension lookup'ı ile uyumlu kalması şart). `.cjs` extension
+zaten CJS olarak okunuyor.
+
+### tsup config gotcha'ları
+
+1. **Default outExtension `.mjs`** — `outExtension: ({ format }) => ({ js:
+format === "cjs" ? ".cjs" : ".js" })` ile `.js` zorla.
+2. **DTS build TS5074 (`incremental` flag)** — base tsconfig `incremental:
+true` veriyor, tsup'ın internal dts builder reddediyor. Çözüm:
+   `tsconfig.tsup.json` ayrı dosya, `incremental: false` + `module: "ESNext"`
+   - `verbatimModuleSyntax: false` (sadece dts emit için kullanılıyor).
+3. **Dual-format çıktıyı manuel test:**
+
+   ```bash
+   node -e "console.log(Object.keys(require('./dist/index.cjs')).length)"
+   node --input-type=module -e "import('./dist/index.js').then(m => console.log(Object.keys(m).length))"
+   ```
+
+### Yan etki: pnpm overrides
+
+tsup install transitif olarak `cosmiconfig-typescript-loader` getirdi
+(peer `@types/node ^25`). pnpm bu peer'ı resolve etmek için iki
+`@types/node` versiyonu (20 + 25) kurdu, vite/vitest plugin tipleri
+çakıştı (`vite@5.4.21_@types+node@25.6.0` vs `_@types+node@20.19.39`).
+
+**Çözüm:** root `package.json` `pnpm.overrides`:
+
+```json
+"@types/node": "20.17.0",
+"typescript": "5.6.3"
+```
+
+TypeScript pin de gerekti — pnpm reinstall sırasında 5.9.3'e zıpladı,
+Prisma client + 5.9 yeni inference birlikte `findMany.select` zincirinde
+`never` türüne düşüyordu. 5.6.3 stable.
+
+### Geleceğe not
+
+- Yeni paket (config hariç) için aynı tsup pattern kopyala.
+- NestJS Nest 11 ile ESM-first oluyor; o ana kadar dual format en güvenli.
+- `"type": "module"` kalsın; tsup `.cjs` ile beraber tutarlı.
+
+### CI gap
+
+Bu sorun lokal `nest start` ile ortaya çıktı, CI yakalayamadı. A4 öncesi
+CI'a "prod build smoke" job eklenecek: `pnpm build && pnpm --filter api
+start --port 0` 5 saniye, healthz check. CI gap kapanır.
+
+---
+
 ## 2026-04-24 — Session A3b
 
 ### S3 presigned PUT Content-Length imzası
