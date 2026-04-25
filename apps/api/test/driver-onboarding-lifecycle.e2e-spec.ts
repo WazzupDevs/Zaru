@@ -5,6 +5,7 @@ import request from "supertest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { AppModule } from "../src/app.module";
+import { setupCatalogFixtures } from "./helpers/catalog-fixtures";
 import { PrismaService } from "../src/common/prisma/prisma.service";
 import { RedisService } from "../src/common/redis/redis.service";
 import { configureApp } from "../src/configure-app";
@@ -26,6 +27,7 @@ describe("Driver onboarding lifecycle (Phase 1 closeout proof)", () => {
   let app: NestExpressApplication;
   let prisma: PrismaService;
   let redis: RedisService;
+  let catalogFixtures: { categoryId: string; vehicleTypeId: string };
 
   async function login(phone: string): Promise<string> {
     const reqRes = await request(app.getHttpServer()).post("/auth/otp/request").send({ phone });
@@ -82,6 +84,7 @@ describe("Driver onboarding lifecycle (Phase 1 closeout proof)", () => {
     await app.init();
     prisma = app.get(PrismaService);
     redis = app.get(RedisService);
+    catalogFixtures = await setupCatalogFixtures(prisma.client);
   });
 
   afterAll(async () => {
@@ -196,20 +199,13 @@ describe("Driver onboarding lifecycle (Phase 1 closeout proof)", () => {
     expect(meRes.status).toBe(200);
     expect(meRes.body.role).toBe("DRIVER");
 
-    // 9. Driver registers a vehicle. Need the wedding-car category seeded.
-    const category = await prisma.client.serviceCategory.findFirst({
-      where: { slug: "wedding-car" },
-      include: { vehicleTypes: { take: 1 } },
-    });
-    expect(category).not.toBeNull();
-    const vehicleTypeId = category!.vehicleTypes[0]!.id;
-
+    // 9. Driver registers a vehicle against the fixture category seeded in beforeAll.
     const vehicleRes = await request(app.getHttpServer())
       .post("/supply/driver-profiles/me/vehicles")
       .set("Authorization", `Bearer ${customerToken}`)
       .set("Idempotency-Key", `e2e-vehicle-${Date.now().toString()}`)
       .send({
-        vehicleTypeId,
+        vehicleTypeId: catalogFixtures.vehicleTypeId,
         plateNumber: "34 ABC 1234",
         brand: "Mercedes",
         model: "E200",
