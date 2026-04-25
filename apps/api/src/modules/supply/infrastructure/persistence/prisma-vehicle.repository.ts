@@ -59,6 +59,17 @@ export class PrismaVehicleRepository implements VehicleRepositoryPort {
     });
     return result.count === 1;
   }
+
+  async setStatus(
+    tx: TxClient,
+    id: string,
+    status: import("@event-fleet/shared-types").VehicleStatus,
+  ): Promise<void> {
+    await tx.vehicle.update({
+      where: { id },
+      data: { status, version: { increment: 1 } },
+    });
+  }
 }
 
 function toRecord(
