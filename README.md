@@ -25,14 +25,46 @@ docs/        adr · progress · roadmap · runbook
 - pnpm 9+
 - Docker (Postgres + Redis için, ileri aşamada)
 
-## Kurulum
+## Status
+
+**Faz 1 (User & Supply foundation) tamamlandı.** Identity (OTP + JWT + refresh
+rotation), polymorphic catalog, supply (driver + vehicle + document +
+availability) ve admin onay paneli production-ready. Faz 2 (booking + ödeme +
+dispatch + mobile) sıradaki büyük blok. Detay:
+[`docs/phase-1-closeout.md`](./docs/phase-1-closeout.md).
+
+## Hızlı Başlangıç
 
 ```bash
 pnpm install
+pnpm db:up                       # Postgres + Redis + MinIO (Docker)
+cp .env.example .env             # PII_HMAC_SECRET, JWT secrets, BOOTSTRAP_ADMIN_PHONE düzenle
+pnpm prisma migrate deploy --schema prisma/schema.prisma
+pnpm db:seed                     # wedding-car kategorisi + bootstrap admin
+pnpm dev                         # API (3000) + admin (3001) paralel
 ```
 
-Bu kadar. İskelet aşamasında daha fazla komut yok. Uygulamalar eklendikçe `turbo run dev`,
-`turbo run build`, `turbo run test`, `turbo run lint`, `turbo run typecheck` aktif olur.
+Servisler:
+
+- **API:** http://localhost:3000 (`/healthz`, `/readyz`, `/version`)
+- **Admin:** http://localhost:3001 (`/login` → BOOTSTRAP_ADMIN_PHONE ile OTP)
+- **MinIO Console:** http://localhost:9001 (minioadmin / minioadmin)
+
+İlk admin için: `BOOTSTRAP_ADMIN_PHONE`'a yazdığın numara ile `/login`'e git,
+OTP gönder, kodu API loglarından (MockSmsSender) al, doğrula → admin paneli açılır.
+
+Test:
+
+```bash
+pnpm -r test                     # ~210 unit/integration test
+pnpm --filter @event-fleet/api test:integration  # Testcontainers
+```
+
+Prod'da yeni admin (kullanıcı önce OTP ile kayıt olmuş olmalı):
+
+```bash
+pnpm api:promote-admin +905551234567
+```
 
 ## Yol Haritası
 
