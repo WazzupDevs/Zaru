@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { ClockModule } from "../src/common/clock/clock.module";
 import { S3Storage } from "../src/common/storage/s3-storage";
+import { StorageBootstrapService } from "../src/common/storage/storage-bootstrap.service";
 import { StorageModule } from "../src/common/storage/storage.module";
 import { STORAGE_PORT, type StoragePort } from "../src/common/storage/storage.port";
 import { validateEnv } from "../src/config/env";
@@ -24,7 +25,19 @@ describe("S3Storage (MinIO)", () => {
         ClockModule,
         StorageModule,
       ],
-    }).compile();
+    })
+      // The real StorageBootstrapService injects PinoLogger via InjectPinoLogger,
+      // which would force us to import nestjs-pino's LoggerModule just for tests
+      // that don't care about logs. Bucket creation is already handled by
+      // setup-integration.ts when the MinIO container boots, so disable the
+      // bootstrap hook here entirely.
+      .overrideProvider(StorageBootstrapService)
+      .useValue({
+        onApplicationBootstrap: async () => {
+          /* no-op in tests */
+        },
+      })
+      .compile();
     storage = moduleRef.get<StoragePort>(STORAGE_PORT);
   });
 
