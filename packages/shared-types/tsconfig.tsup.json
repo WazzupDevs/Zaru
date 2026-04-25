@@ -1,0 +1,21 @@
+{
+  "extends": "@event-fleet/config-ts/tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    "incremental": false,
+    "tsBuildInfoFile": null,
+    "noEmit": false,
+    "declaration": true,
+    "declarationMap": false,
+    "emitDeclarationOnly": true,
+    // We dropped `"type": "module"` so NodeNext infers CJS, which clashes
+    // with the ESM-style imports under `verbatimModuleSyntax`. tsup runs
+    // through tsc only for dts emission — it doesn't care about module
+    // semantics, so loosen the check here.
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "verbatimModuleSyntax": false
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "**/*.spec.ts", "vitest.config.ts", "tsup.config.ts"]
+}
