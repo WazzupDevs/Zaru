@@ -2,11 +2,8 @@ import { Injectable } from "@nestjs/common";
 
 import { PrismaService } from "../../../../common/prisma/prisma.service";
 
-import type {
-  TxClient,
-  UserRecord,
-  UserRepositoryPort,
-} from "../../application/ports/user.repository.port";
+import type { TxClient } from "../../../../common/persistence/tx-client";
+import type { UserRecord, UserRepositoryPort } from "../../application/ports/user.repository.port";
 
 @Injectable()
 export class PrismaUserRepository implements UserRepositoryPort {

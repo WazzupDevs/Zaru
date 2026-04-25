@@ -7,13 +7,13 @@ import {
   type OtpRequestedEventPayload,
 } from "../../domain/events/otp-requested.event";
 
+import type { TxClient } from "../../../../common/persistence/tx-client";
 import type {
   CreateOtpRequestInput,
   OtpRequestFullRecord,
   OtpRequestRecord,
   OtpRequestRepositoryPort,
 } from "../../application/ports/otp-request.repository.port";
-import type { TxClient } from "../../application/ports/user.repository.port";
 
 /**
  * Prisma-backed implementation. The `createWithOutbox` method writes the OTP row

@@ -1,6 +1,6 @@
 import type { UserRole } from "@event-fleet/shared-types";
 
-import type { PrismaClient } from "@prisma/client";
+import type { TxClient } from "../../../../common/persistence/tx-client";
 
 export const USER_REPOSITORY_PORT = Symbol("USER_REPOSITORY_PORT");
 
@@ -13,8 +13,6 @@ export interface UserRecord {
   lastLoginAt: Date | null;
   createdAt: Date;
 }
-
-export type TxClient = Parameters<Parameters<PrismaClient["$transaction"]>[0]>[0];
 
 export interface UserRepositoryPort {
   /** Find an active (not soft-deleted) user by phone. */

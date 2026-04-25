@@ -42,6 +42,7 @@ model User {
   deletedAt       DateTime? @map("deleted_at")
 
   refreshTokens RefreshToken[]
+  driverProfile DriverProfile?
 
   @@index([phoneE164])
   @@map("users")
@@ -170,6 +171,7 @@ model VehicleType {
   updatedAt   DateTime        @updatedAt @map("updated_at")
   deletedAt   DateTime?       @map("deleted_at")
   category    ServiceCategory @relation(fields: [categoryId], references: [id])
+  vehicles    Vehicle[]
 
   @@unique([categoryId, slug])
   @@index([categoryId, isActive, sortOrder])
@@ -208,4 +210,127 @@ model CategoryAttributeDefinition {
   @@unique([categoryId, key, scope])
   @@index([categoryId, scope, sortOrder])
   @@map("category_attribute_definitions")
+}
+
+// =====================================================================
+// Supply (A3b) — driver onboarding aggregate root + vehicles + documents.
+// PII (national_id, IBAN) lives only as hashes; plaintext never persisted.
+// See ADR 0016 for the hashing strategy.
+// =====================================================================
+
+enum DriverOnboardingStatus {
+  DRAFT
+  DOCUMENTS_PENDING
+  APPROVED
+  REJECTED
+  SUSPENDED
+}
+
+model DriverProfile {
+  id               String                 @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  // user_id is unique (a user has at most one driver profile, alive or
+  // soft-deleted). We enforce that via @unique here AND a partial unique
+  // index on the active row (added in migration SQL).
+  userId           String                 @unique @map("user_id") @db.Uuid
+  firstName        String                 @map("first_name")
+  lastName         String                 @map("last_name")
+  // HMAC-SHA256 hex; used for admin lookup. ADR 0016.
+  nationalIdHash   String                 @map("national_id_hash")
+  birthDate        DateTime               @map("birth_date") @db.Date
+  // argon2id; non-deterministic. Display uses ibanLast4.
+  ibanHash         String                 @map("iban_hash")
+  ibanLast4        String                 @map("iban_last4")
+  status           DriverOnboardingStatus @default(DRAFT)
+  rejectionReason  String?                @map("rejection_reason")
+  approvedAt       DateTime?              @map("approved_at")
+  approvedByUserId String?                @map("approved_by_user_id") @db.Uuid
+  // Marketplace commission as a fraction (0.15 = 15%). Override per driver
+  // is allowed; default mirrors iyzico onboarding contract.
+  commissionRate   Decimal                @default(0.15) @map("commission_rate") @db.Decimal(5, 4)
+  createdAt        DateTime               @default(now()) @map("created_at")
+  updatedAt        DateTime               @updatedAt @map("updated_at")
+  deletedAt        DateTime?              @map("deleted_at")
+  version          Int                    @default(0)
+  user             User                   @relation(fields: [userId], references: [id])
+  vehicles         Vehicle[]
+  documents        Document[]
+
+  @@index([status])
+  @@index([nationalIdHash])
+  @@map("driver_profiles")
+}
+
+enum VehicleStatus {
+  DRAFT
+  PENDING_APPROVAL
+  ACTIVE
+  SUSPENDED
+}
+
+model Vehicle {
+  id              String        @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  driverProfileId String        @map("driver_profile_id") @db.Uuid
+  vehicleTypeId   String        @map("vehicle_type_id") @db.Uuid
+  // Stored normalized (PlateVO output): uppercase, no spaces.
+  plateNumber     String        @map("plate_number")
+  brand           String
+  model           String
+  year            Int
+  color           String
+  // Polymorphic per-category attributes (catalog scope=VEHICLE definitions).
+  attributes      Json          @default("{}")
+  photoKeys       String[]      @map("photo_keys")
+  status          VehicleStatus @default(DRAFT)
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+  deletedAt       DateTime?     @map("deleted_at")
+  version         Int           @default(0)
+  driverProfile   DriverProfile @relation(fields: [driverProfileId], references: [id])
+  vehicleType     VehicleType   @relation(fields: [vehicleTypeId], references: [id])
+
+  @@index([driverProfileId])
+  @@index([status])
+  @@map("vehicles")
+}
+
+enum DocumentType {
+  DRIVER_LICENSE
+  VEHICLE_REGISTRATION
+  INSURANCE
+  KASKO
+  AUTHORITY_CERTIFICATE
+  IDENTITY_CARD
+}
+
+enum DocumentStatus {
+  UPLOADED
+  APPROVED
+  REJECTED
+  EXPIRED
+}
+
+model Document {
+  id               String         @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  driverProfileId  String         @map("driver_profile_id") @db.Uuid
+  vehicleId        String?        @map("vehicle_id") @db.Uuid
+  type             DocumentType
+  storageKey       String         @map("storage_key")
+  fileName         String         @map("file_name")
+  fileSize         Int            @map("file_size")
+  mimeType         String         @map("mime_type")
+  issuedAt         DateTime?      @map("issued_at") @db.Date
+  expiresAt        DateTime?      @map("expires_at") @db.Date
+  status           DocumentStatus @default(UPLOADED)
+  reviewedByUserId String?        @map("reviewed_by_user_id") @db.Uuid
+  reviewedAt       DateTime?      @map("reviewed_at")
+  rejectionReason  String?        @map("rejection_reason")
+  createdAt        DateTime       @default(now()) @map("created_at")
+  updatedAt        DateTime       @updatedAt @map("updated_at")
+  deletedAt        DateTime?      @map("deleted_at")
+  driverProfile    DriverProfile  @relation(fields: [driverProfileId], references: [id])
+
+  @@index([driverProfileId])
+  @@index([vehicleId])
+  @@index([expiresAt])
+  @@map("documents")
 }

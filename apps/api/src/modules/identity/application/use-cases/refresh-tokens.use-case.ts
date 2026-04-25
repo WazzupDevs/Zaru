@@ -1,6 +1,11 @@
 import { Inject, Injectable } from "@nestjs/common";
 
 import { CLOCK_PORT, type ClockPort } from "../../../../common/clock/clock.port";
+import {
+  OUTBOX_WRITER_PORT,
+  type OutboxWriterPort,
+} from "../../../../common/persistence/outbox-writer.port";
+import { TX_RUNNER_PORT, type TxRunnerPort } from "../../../../common/persistence/tx-runner.port";
 import { RefreshExpiredError } from "../../domain/errors/refresh-expired.error";
 import { RefreshNotFoundError } from "../../domain/errors/refresh-not-found.error";
 import { RefreshReuseDetectedError } from "../../domain/errors/refresh-reuse-detected.error";
@@ -14,12 +19,10 @@ import {
   type RefreshTokensIssuedEventPayload,
 } from "../../domain/events/refresh-tokens-issued.event";
 import { JWT_TOKEN_SERVICE_PORT, type JwtTokenServicePort } from "../ports/jwt-token.service.port";
-import { OUTBOX_WRITER_PORT, type OutboxWriterPort } from "../ports/outbox-writer.port";
 import {
   REFRESH_TOKEN_REPOSITORY_PORT,
   type RefreshTokenRepositoryPort,
 } from "../ports/refresh-token.repository.port";
-import { TX_RUNNER_PORT, type TxRunnerPort } from "../ports/tx-runner.port";
 import { USER_REPOSITORY_PORT, type UserRepositoryPort } from "../ports/user.repository.port";
 
 export interface RefreshTokensInput {

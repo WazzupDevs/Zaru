@@ -1,17 +1,10 @@
 import { Injectable } from "@nestjs/common";
 
-import { PrismaService } from "../../../../common/prisma/prisma.service";
-
-import type {
-  OutboxEventInput,
-  OutboxWriterPort,
-} from "../../application/ports/outbox-writer.port";
-import type { TxClient } from "../../application/ports/user.repository.port";
+import type { OutboxEventInput, OutboxWriterPort } from "./outbox-writer.port";
+import type { TxClient } from "./tx-client";
 
 @Injectable()
 export class PrismaOutboxWriter implements OutboxWriterPort {
-  constructor(private readonly prisma: PrismaService) {}
-
   async write(tx: TxClient, event: OutboxEventInput): Promise<void> {
     await tx.outboxEvent.create({
       data: {
@@ -21,9 +14,5 @@ export class PrismaOutboxWriter implements OutboxWriterPort {
         payload: event.payload,
       },
     });
-  }
-
-  private _unused(): void {
-    void this.prisma;
   }
 }

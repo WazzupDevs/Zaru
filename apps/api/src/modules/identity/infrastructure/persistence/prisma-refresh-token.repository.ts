@@ -2,12 +2,12 @@ import { Injectable } from "@nestjs/common";
 
 import { PrismaService } from "../../../../common/prisma/prisma.service";
 
+import type { TxClient } from "../../../../common/persistence/tx-client";
 import type {
   IssueRefreshTokenInput,
   RefreshTokenRecord,
   RefreshTokenRepositoryPort,
 } from "../../application/ports/refresh-token.repository.port";
-import type { TxClient } from "../../application/ports/user.repository.port";
 
 @Injectable()
 export class PrismaRefreshTokenRepository implements RefreshTokenRepositoryPort {

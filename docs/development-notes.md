@@ -351,3 +351,97 @@ in project" hatası gelir. Şu an root-level tsconfig.json yok (her
 package kendi tsconfig'ini yönetiyor); seed dosyası `tsx` ile çalışıyor
 (kendi internal tsconfig). ESLint root flat config seed'i lint etmiyor
 çünkü `apps/api/**` ve `packages/shared-types/**` dışında — kabul.
+
+---
+
+## 2026-04-24 — Session A3b
+
+### S3 presigned PUT Content-Length imzası
+
+`getSignedUrl(PutObjectCommand({ ContentLength: maxSizeBytes }))` —
+Content-Length URL imzasına dahil. Client 16 MB dosyayı 15 MB limit ile
+yüklemeye kalkarsa S3 400 döner. "Client'a güvenelim" değil "imza zorla"
+kuralı. Test: `storage.integration-spec.ts` oversize senaryosu bu davranışı
+doğrular.
+
+### MinIO `forcePathStyle: true` zorunlu
+
+MinIO hostname-style URL'i desteklemiyor. R2 her ikisini de kabul ediyor
+(env default: `STORAGE_FORCE_PATH_STYLE=true`). Aynı config, iki provider.
+
+### Testcontainers MinIO spin-up
+
+`setup-integration.ts` globalSetup'ta postgres + redis + minio üçünü de
+boot ediyor. MinIO container'ı `quay.io/minio/minio:RELEASE.2024-10-13...`
+(image pinned). Test bucket + anonymous download policy `S3Client` ile
+JS'de kurulur (mc binary yerine) — daha portable, testcontainer lifecycle
+ile uyumlu.
+
+### Prisma + @prisma/client ile cross-module write
+
+`supply.ApproveDriverUseCase` içinde `tx.user.update({...})` ile identity
+tablosuna yazıyoruz (User.role → DRIVER). Aynı transaction → atomik.
+Event-driven alternative "APPROVED ama henüz promote edilmedi" penceresi
+yaratır (outbox worker bir sonraki drain'e kadar). Kasıtlı istisna; her
+cross-module write YORUM ile gerekçelendirilmeli. ADR 0005 § "Revisit
+trigger": bu pattern kontrolden çıkarsa identity'ye
+`PromoteUserRoleUseCase` port'u ekleriz.
+
+### PII disiplini (KRİTİK)
+
+TCKN ve IBAN plaintext HİÇBİR yerde kalıcı değil:
+
+- **DB:** sadece `national_id_hash` (HMAC-SHA256) ve `iban_hash` (argon2id).
+  `iban_last4` display için ayrı kolon, plaintext TCKN için display yok.
+- **Event payload:** hash bile YOK, sadece id + isim + last4.
+- **Response DTO:** mapper'lar (`driver-profile.mapper.ts`) sadece safe
+  alanları geçirir. Response'a PII eklenirse smoke assertion kırılır.
+- **Log:** pino redaction `*.nationalId`, `*.iban`, `*.nationalIdHash`,
+  `*.ibanHash`, + body-level path'ler. Hash bile görünmesin (`ibanHash`
+  eski PII bağlantısı tutar).
+
+ADR 0016 — kuralın gerekçesi. Bu kural booking (PII yok ama wallet/payout
+IBAN görür), messaging (IBAN regex mask) için de geçerli.
+
+### Attribute validator application layer'da
+
+İlk attempt `domain/services/` altına koydum ama `AttributeDefinitionRecord`
+tipi `catalog/application/ports/` altında — domain → application import
+ESLint ADR 0005 guard'ı engelliyor (doğru davranış). Taşındı:
+`supply/application/services/attribute-validator.ts`. Genel kural: bir
+domain service dış modülün application record'unu consume ediyorsa
+application layer'da yaşamalı, domain'de değil.
+
+### VehicleType reverse relation
+
+`VehicleType` modeline `vehicles Vehicle[]` back-ref eklendi (Prisma
+schema consistency için). Migration'da ek kolon yok — sadece ORM-side.
+Bu her yeni relation için hatırlanması gereken bir şey: karşı tarafın
+array referansını unutma, yoksa Prisma "has-many" uyarısı verir.
+
+### DriverProfile user_id: @unique + partial unique index
+
+`@unique` Prisma DSL'i total unique constraint kurar (soft-delete dahil).
+Ancak aynı user yeniden profile açabilir mi (silinen önceki kayıttan
+sonra)? İleride KVKK silme → yeniden kayıt senaryosu için partial unique
+index eklendi (`WHERE deleted_at IS NULL`), total unique constraint'ten
+**daha gevşek**. Prisma DSL'in `@unique`'i silinen satırları da görüyor;
+bu iki katmanlı garanti:
+
+- Aktif row'lar partial index ile unique.
+- Eski soft-deleted row'lar unique değil — silinmiş user revive edildiğinde
+  yeni profile açabilir.
+
+Şu an total `@unique` konstrainti varken partial de var → migration SQL'de
+`ALTER TABLE DROP CONSTRAINT` ile total'i kaldırabiliriz ama A4'e ertelendi
+(şu an soft-deleted user yok, sorun yok). Gelecekte KVKK silme flow'u
+bunu triggerlar.
+
+### PersistenceModule promotion
+
+Identity'den aldığımız `TxRunnerPort` + `OutboxWriterPort` common/persistence'e
+promote edildi. Supply (ve tüm gelecek modüller) aynı ports'u inject eder,
+tek implementation. Aynı zamanda `TxClient` tipi de `common/persistence/
+tx-client.ts`'te. Identity ports artık TxClient'ı oradan import ediyor.
+Cross-module port paylaşımı = common/\* altında, module-specific kalır
+module altında.

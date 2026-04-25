@@ -57,6 +57,23 @@ export class PrismaServiceCategoryRepository implements ServiceCategoryRepositor
     });
     return rows.map(toVehicleTypeRecord);
   }
+
+  async findActiveVehicleType(id: string): Promise<VehicleTypeRecord | null> {
+    const row = await this.prisma.client.vehicleType.findFirst({
+      where: { id, isActive: true },
+    });
+    return row ? toVehicleTypeRecord(row) : null;
+  }
+
+  async listAttributeDefinitionsForCategory(
+    categoryId: string,
+  ): Promise<AttributeDefinitionRecord[]> {
+    const rows = await this.prisma.client.categoryAttributeDefinition.findMany({
+      where: { categoryId },
+      orderBy: [{ scope: "asc" }, { sortOrder: "asc" }, { key: "asc" }],
+    });
+    return rows.map(toAttributeDefRecord);
+  }
 }
 
 interface CategoryRow {

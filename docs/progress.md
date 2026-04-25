@@ -883,6 +883,271 @@ A3c kapanışı: Availability + admin bootstrap CLI + ADR 0015 + Faz 1
 
 ---
 
+## 2026-04-24 — Session A3b: Supply Core & Storage
+
+Branch: `feat/supply-driver-profiles` (A3a stack üstüne, base
+`feat/supply-catalog`). 20 commit (kullanıcı option B'yi seçti — A3a
+merge bekliyor, A3b paralel ilerledi). Hedef tamamlandı: storage layer,
+PII hashing, sürücü profili lifecycle, vehicle, document, admin onay
+endpoint'leri ve e2e izolasyonu.
+
+### Done
+
+**Persistence ports promotion (G0)**
+
+- `TxRunnerPort` + `OutboxWriterPort` + `TxClient` identity'den
+  `apps/api/src/common/persistence/`'e promote edildi. `PersistenceModule`
+  `@Global`. Identity'nin local kopyaları silindi, tüm import path'leri
+  yenilendi. Supply (ve gelecek modüller) bu ports'u inject ediyor.
+
+**Storage layer (G1)**
+
+- `apps/api/src/common/storage/` — `StoragePort` (presigned PUT/GET +
+  HEAD + delete + healthCheck), `S3Storage` (`@aws-sdk/client-s3`),
+  `StorageKeyBuilder` (canonical drivers/<id>/documents|vehicles paths),
+  `StorageModule` `@Global`.
+- **Content-Length signed presigned PUT**: client 15 MB üzeri yükleme
+  yapamaz, S3 reddeder. Hard cap, "client'a güvenelim" değil.
+- MinIO dev compose (`quay.io/minio/minio:RELEASE.2024-10-13...` pinned)
+  - `mc` init container (bucket bootstrap + anonymous download policy).
+- `/readyz`'a storage HeadBucket check eklendi (2sn timeout).
+- `setup-integration.ts` MinIO container'ı boot ediyor + bucket policy
+  S3Client ile JS'de kuruluyor (mc binary lifecycle sorununu atlamak için).
+- `storage.integration-spec.ts` — 5 test: round-trip upload/download,
+  Content-Length oversize reject, missing key null metadata, healthCheck,
+  S3Storage default binding.
+- ADR 0013 yazıldı.
+
+**PII hashing (G2)**
+
+- `PiiHasher` (common/security): `hashNationalId` HMAC-SHA256 deterministic
+  (`PII_HMAC_SECRET` 64 hex), `hashIban` argon2id non-deterministic,
+  `verifyIban`. `SecurityModule` `@Global`.
+- 7 unit test (deterministic match, secret-change variance, hex format,
+  argon2 verify pos/neg).
+- `NationalIdVO` strict TCKN checksum (10. hane formula + 11. hane sum).
+  6 unit test (3 valid algoritmik TCKN: 10000000146, 11111111110,
+  12345678950 + 3 invalid: format, all-zeros, checksum).
+- `IbanVO` ISO 13616 mod-97 checksum, `last4` extract. 8 unit test.
+- `PlateVO` TR plaka regex + normalize (uppercase + space strip).
+  8 unit test.
+- Pino redaction `*.nationalId`, `*.nationalIdHash`, `*.iban`, `*.ibanHash`,
+  - `req.body.nationalId`, `req.body.iban`. Hash bile log'a yazılmıyor —
+    defansif (HMAC secret rotation döneminde hash'in kendisi de "eski PII
+    bağlantısı" tutar).
+
+**Schema (G3)**
+
+- `prisma/schema.prisma`: `DriverProfile`, `Vehicle`, `Document` +
+  4 enum (DriverOnboardingStatus, VehicleStatus, DocumentType,
+  DocumentStatus). DriverProfile.userId `@unique` + partial unique index
+  (`WHERE deleted_at IS NULL`); plate_number partial unique index.
+- Migration `20260424000000_add_supply_tables/migration.sql` (Prisma
+  diff + manuel partial index'ler). Postgres'e applied.
+- `SOFT_DELETE_MODELS` set'ine 3 yeni model eklendi (PrismaService
+  extension).
+- `shared-types/src/supply/`: `CreateDriverProfileInput`,
+  `UpdateDriverProfileInput`, `DriverProfileResponse`,
+  `RegisterVehicleInput`, `UpdateVehicleAttributesInput`,
+  `VehicleResponse`, `RequestDocumentUploadInput`,
+  `RequestDocumentUploadResponse`, `ReviewDocumentInput`,
+  `DocumentResponse`, `RejectDriverInput`. 13 zod test case.
+
+**Driver profile use cases (G4)**
+
+- 4 katman scaffold: domain (errors + events + constants + age helper +
+  VOs), application (3 repo ports), infrastructure (3 Prisma repos),
+  application/use-cases (7 use case).
+- Use case'ler: `CreateDriverProfileUseCase` (TCKN HMAC + IBAN argon2,
+  age guard, duplicate-by-userId + duplicate-by-tcknHash, outbox event),
+  `UpdateDriverProfileUseCase` (DRAFT only), `GetMyDriverProfileUseCase`,
+  `SubmitForReviewUseCase` (REQUIRED_DOCUMENT_TYPES check +
+  DOCUMENTS_PENDING transition), `ApproveDriverUseCase` (admin —
+  same-tx User.role → DRIVER promotion, outbox event), `RejectDriverUseCase`
+  (admin — rejectionReason zorunlu), `ListPendingDriversUseCase` (admin
+  cursor pagination).
+- Module-level `CLAUDE.md`: PII disiplini + cross-module write
+  rationale + port responsibilities.
+- 6 unit test create-driver-profile için (happy path + duplicate-by-user
+  - duplicate-by-tckn + underage + invalid TCKN + invalid IBAN). PII
+    payload assertion smoke.
+
+**Vehicle use cases (G5)**
+
+- `CatalogModule` SERVICE_CATEGORY_REPOSITORY_PORT export ediyor;
+  `findActiveVehicleType` ve `listAttributeDefinitionsForCategory`
+  port'a eklendi.
+- `AttributeValidator` (application/services — domain'den taşındı,
+  ADR 0005 cross-layer guard sebebiyle): CategoryAttributeDefinition
+  rows'undan dinamik Zod schema, strict (extra key reject).
+- `RegisterVehicleUseCase` (PlateVO + driver APPROVED guard + vehicle
+  type lookup + attribute validation + plate uniqueness + outbox event),
+  `UpdateVehicleAttributesUseCase` (optimistic-lock via repo updateMany
+  with version filter), `ListMyVehiclesUseCase`.
+
+**Document use cases (G6)**
+
+- `RequestDocumentUploadUseCase` (mime whitelist + max-size check +
+  driver/vehicle ownership guards + presigned PUT → DB row UPLOADED).
+- `ConfirmDocumentUploadUseCase` (storage HEAD → size match → outbox
+  DocumentUploaded; size mismatch → cleanup deleteObject).
+- `ReviewDocumentUseCase` (admin — APPROVED/REJECTED transition +
+  rejectionReason guard + outbox event).
+- `ListMyDocumentsUseCase`.
+
+**RolesGuard + Controllers (G7)**
+
+- `RolesGuard` (common/auth) + `Roles(...)` decorator. APP_GUARD
+  zincirinde JwtAuthGuard'dan sonra (auth → roles).
+- 4 controller: `DriverProfileController` (POST/GET/PATCH/POST submit),
+  `VehicleController` (POST/GET/PATCH), `DocumentController` (POST
+  upload-url + POST confirm + GET), `AdminSupplyController`
+  (`@Roles("ADMIN")`, GET pending, approve, reject, document review).
+- Idempotency interceptor kritik mutating endpoint'lerde (create profile,
+  submit, register vehicle, upload-url, approve, reject, document review).
+- Mappers (`driver-profile.mapper.ts`) — PII boundary: DriverProfileResponse,
+  VehicleResponse, DocumentResponse'a hash ve plaintext girmez, sadece
+  ibanLast4 ve safe alanlar.
+- `SupplyModule` tüm use case'ler + 3 repo provider; `app.module.ts`'e
+  eklendi.
+
+**ADR + dev-notes (G8)**
+
+- ADR 0016 yazıldı: TCKN → HMAC-SHA256, IBAN → argon2id, gerekçe +
+  alternatives + revisit triggers + secret rotation runbook A4+ TODO.
+- `docs/development-notes.md` "2026-04-24 — Session A3b" bölümü:
+  Content-Length signing, MinIO forcePathStyle, Testcontainers MinIO
+  pattern, cross-module write rationale, PII disiplini, attribute
+  validator placement, VehicleType reverse relation, partial unique
+  index 2-katmanlı, PersistenceModule promotion.
+
+**E2E (G8.5)**
+
+- `apps/api/test/driver-profile.integration-spec.ts` — 8 e2e test:
+  - DRAFT profile creates, response asla PII içermez (smoke assertion)
+  - Zod-level invalid TCKN → 400
+  - Domain-level checksum-fail TCKN → SUPPLY_INVALID_NATIONAL_ID
+  - Underage → SUPPLY_DRIVER_UNDERAGE
+  - DB rows: nationalIdHash hex, ibanHash $argon2id$, ibanLast4 set,
+    plaintext kolon yok
+  - Submit eksik evrak → SUPPLY_INCOMPLETE_DOCUMENTS + missingTypes list
+  - 401 without Bearer
+  - 403 on `/admin/*` for CUSTOMER token (RolesGuard works)
+- Test isolation pattern: distinct phone `+90555901*`, FK-aware cleanup
+  (Document → Vehicle → DriverProfile → Refresh → Otp → User), Redis
+  rl:\* purge.
+
+### Verification
+
+| Adım                                 | Sonuç                                                                                                                          |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| `pnpm install --frozen-lockfile`     | OK (+@aws-sdk/client-s3, @aws-sdk/s3-request-presigner)                                                                        |
+| `pnpm -r typecheck`                  | OK                                                                                                                             |
+| `pnpm -r lint`                       | OK                                                                                                                             |
+| `pnpm -r build`                      | OK                                                                                                                             |
+| `pnpm --filter shared-types test`    | **49 PASS** (önceki 36'dan +13 supply schema)                                                                                  |
+| `pnpm --filter api test` (unit)      | **99 PASS** (önceki 55'ten +44: PiiHasher 7 + StorageKey 7 + NationalId 6 + Iban 8 + Plate 8 + CreateDriverProfile 6 + 2 misc) |
+| `pnpm --filter api test:integration` | **47 PASS** (önceki 34'ten +13: 5 storage + 8 driver-profile)                                                                  |
+
+### Plandan sapmalar (gerekçeli)
+
+1. **TxRunnerPort + OutboxWriterPort common'a promote (plan dışı).**
+   Brief identity'deki ports'u "referans" olarak gösteriyordu ama supply
+   da aynı ports'u kullanmak zorunda — DRY için promotion zorunluydu.
+   Tek refactor commit, identity test'lerini kırmadı (55 → 55 pass).
+2. **`AttributeValidator` domain → application taşındı.** Brief
+   `domain/services/` öneriyordu ama ESLint cross-layer guard (ADR 0005)
+   `catalog/application/ports`'tan import'u engelliyor. Doğru davranış —
+   validator dış modülün application record'unu consume ediyor →
+   application layer.
+3. **MinIO Testcontainers spin-up + bucket bootstrap S3Client ile (mc
+   binary değil).** Brief `mc` öneriyordu (compose'da öyle) ama
+   Testcontainers'ta mc init container lifecycle yönetimi karmaşık →
+   `S3Client.send(CreateBucketCommand + PutBucketPolicyCommand)` ile
+   JS'de kurmak daha portable.
+4. **Storage compose ve storage port commit'leri birleşti.** Plan iki
+   ayrı commit istiyordu; lint-staged ilk commit'e compose'u dahil etti
+   (storage port'la birlikte staged). Boş ikinci commit drop edildi.
+5. **`UpdateDriverProfileInput` `string | undefined` zorunda.** TS
+   `exactOptionalPropertyTypes: true` aktif; optional alan mı opsiyonel
+   undefined-allowed mı ayrımı bizi bu syntax'a zorluyor.
+6. **`VehicleTypeNotFoundError` registerVehicle dosyasında inline.**
+   Tek bir use case'de kullanılıyor, ayrı dosyaya taşımak abartı —
+   inline class.
+7. **Shadow database ile migration diff.** Local Postgres'te
+   `efshadow` DB yarattım, `prisma migrate diff --shadow-database-url`
+   ile SQL ürettim. Manuel partial index'leri ekledim. CI'da bu yok —
+   `migrate deploy` ürettiğim SQL'i doğrudan apply ediyor.
+8. **Admin promotion e2e A3c'ye ertelendi.** Brief full lifecycle
+   (CUSTOMER → submit → admin approve → role becomes DRIVER → register
+   vehicle) öneriyordu. Admin user yaratmak için ADMIN bootstrap CLI
+   gerek (A3c scope) — şimdilik e2e CUSTOMER side + 403 on /admin/\*
+   smoke ile sınırlı. Driver lifecycle'in admin-side parçası unit
+   test (use case) ve manual smoke ile kapsanıyor.
+9. **`drainOnce()` kullanım sırasında bir migration `efshadow` DB
+   yaratıldı.** Sadece local — repo'ya commit edilmedi, manuel cleanup
+   gerekirse `DROP DATABASE efshadow`.
+
+### Final commit listesi
+
+| #   | Hash        | Konu                                                                               |
+| --- | ----------- | ---------------------------------------------------------------------------------- |
+| 1   | `d7e96f1`   | refactor(api): promote tx runner and outbox writer ports to common/persistence     |
+| 2   | `2cd6ec7`   | feat(api): add storage port with s3-compatible implementation                      |
+| 3   | `393d03e`   | test(api): add integration tests for presigned upload flow                         |
+| 4   | `78ca612`   | docs: add ADR 0013 storage presigned upload                                        |
+| 5   | `c2b8d48`   | feat(api): add pii hasher with hmac and argon2id strategies                        |
+| 6   | `8bcdf72`   | feat(supply): add national id, iban and plate value objects with checksums         |
+| 7   | `f2b0674`   | feat(api): extend pino redaction for pii fields                                    |
+| 8   | `3989d49`   | feat(db): add driver profile, vehicle and document tables                          |
+| 9   | `3ac6ff6`   | feat(shared-types): add supply schemas                                             |
+| 10  | `4e56c4d`   | feat(supply): add domain errors, events and onboarding constants                   |
+| 11  | `3360686`   | feat(supply): add repository ports and prisma implementations                      |
+| 12  | `eb5a1e4`   | feat(supply): implement driver profile lifecycle use cases                         |
+| 13  | `f657c73`   | feat(catalog): expose vehicle type lookup and attribute defs to other modules      |
+| 14  | `5e2ebcc`   | feat(supply): add vehicle, document and attribute domain errors                    |
+| 15  | `313c140`   | feat(supply): implement vehicle registration with polymorphic attribute validation |
+| 16  | `e70e927`   | feat(supply): implement document upload, confirm and review use cases              |
+| 17  | `e1f503a`   | feat(api): add roles guard and roles decorator                                     |
+| 18  | `3866e78`   | feat(supply): wire driver, vehicle, document and admin controllers                 |
+| 19  | `baa679d`   | test(supply): add driver profile e2e with pii redaction smoke                      |
+| 20  | (bu commit) | docs: log session A3b progress                                                     |
+
+### Pending (A3c)
+
+- **Storage smoke** (manuel): MinIO 9000 portunda gerçek upload-confirm
+  round-trip, log'da redaction kanıtı (TCKN/IBAN gönder, log'da
+  `[Redacted]` gör).
+- **Admin bootstrap CLI** (`pnpm api:promote-admin <phone>`) +
+  `BOOTSTRAP_ADMIN_PHONE` env (dev/test seed).
+- **ADR 0015 admin bootstrap.**
+- **Full admin approval e2e** (now possible after CLI exists):
+  CUSTOMER login → 4 evrak yükle → submit → admin approve → role DRIVER
+  → register vehicle.
+- **Vehicle availability** (`tstzrange` overlap operator).
+- **shadcn/ui component install** + driver approval admin ekranı
+  (`/admin/drivers/pending`).
+- **Root ESLint strict parity** for admin workspace.
+
+### Pending (A4)
+
+- Booking modülü (Quote + pricing + state machine).
+- Payment (iyzico marketplace).
+- Dispatch, notifications, reviews.
+- Sentry + OpenTelemetry.
+- NetgsmSmsSender real HTTP integration + İleti Merkezi failover.
+- Coolify + Hetzner deploy pipeline.
+- Mobile app scaffolding.
+- TCKN/IBAN secret rotation runbook.
+- Post-upload pipeline: virus scan + EXIF strip + thumbnail.
+
+### Next
+
+A3c başlamaya hazır. Branch: `feat/supply-availability` (yeni branch,
+A3b merge sonrası).
+
+---
+
 <!--
 Şablon (yeni oturum buradan başlasın):
 

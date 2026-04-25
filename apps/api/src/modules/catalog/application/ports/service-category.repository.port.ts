@@ -54,4 +54,11 @@ export interface ServiceCategoryRepositoryPort {
   findActiveBySlug(slug: string): Promise<ServiceCategoryDetail | null>;
   /** Active vehicle types for a category. */
   listVehicleTypes(categoryId: string): Promise<VehicleTypeRecord[]>;
+  /**
+   * Lookup an active vehicle type by id. Used by supply when a driver
+   * registers a vehicle so we can validate against the right attribute
+   * definitions for the parent category.
+   */
+  findActiveVehicleType(id: string): Promise<VehicleTypeRecord | null>;
+  listAttributeDefinitionsForCategory(categoryId: string): Promise<AttributeDefinitionRecord[]>;
 }

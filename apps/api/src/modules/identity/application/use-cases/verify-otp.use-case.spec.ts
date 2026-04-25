@@ -28,11 +28,9 @@ import {
   type RefreshTokenRecord,
   type RefreshTokenRepositoryPort,
 } from "../ports/refresh-token.repository.port";
-import {
-  type UserRecord,
-  type UserRepositoryPort,
-  type TxClient,
-} from "../ports/user.repository.port";
+import { type UserRecord, type UserRepositoryPort } from "../ports/user.repository.port";
+
+import type { TxClient } from "../../../../common/persistence/tx-client";
 
 const NOW = new Date("2026-04-23T05:00:00.000Z");
 const OTP_TTL_MS = 5 * 60_000;
