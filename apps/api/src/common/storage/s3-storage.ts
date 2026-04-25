@@ -1,4 +1,5 @@
 import {
+  CreateBucketCommand,
   DeleteObjectCommand,
   HeadBucketCommand,
   HeadObjectCommand,
@@ -106,6 +107,25 @@ export class S3Storage implements StoragePort, OnModuleDestroy {
     }
   }
 
+  async ensureBucket(): Promise<void> {
+    try {
+      await this.client.send(new HeadBucketCommand({ Bucket: this.bucket }));
+      return;
+    } catch (err) {
+      if (!isNotFound(err) && !isNoSuchBucket(err)) {
+        throw err;
+      }
+    }
+    try {
+      await this.client.send(new CreateBucketCommand({ Bucket: this.bucket }));
+    } catch (err) {
+      // CreateBucket is not idempotent — race conditions or pre-existing
+      // buckets owned by this account return one of these names.
+      if (isAlreadyOwned(err)) return;
+      throw err;
+    }
+  }
+
   onModuleDestroy(): void {
     this.client.destroy();
   }
@@ -119,4 +139,16 @@ function isNotFound(err: unknown): boolean {
   if (typeof err !== "object" || err === null) return false;
   const e = err as { name?: string; $metadata?: { httpStatusCode?: number } };
   return e.name === "NotFound" || e.$metadata?.httpStatusCode === 404;
+}
+
+function isNoSuchBucket(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const e = err as { name?: string };
+  return e.name === "NoSuchBucket";
+}
+
+function isAlreadyOwned(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const e = err as { name?: string };
+  return e.name === "BucketAlreadyOwnedByYou" || e.name === "BucketAlreadyExists";
 }

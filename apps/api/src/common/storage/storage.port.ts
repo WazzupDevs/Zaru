@@ -48,4 +48,11 @@ export interface StoragePort {
   deleteObject(key: string): Promise<void>;
   /** Fast bucket-reachability check for /readyz. */
   healthCheck(): Promise<boolean>;
+  /**
+   * Idempotent bucket bootstrap. No-op if the bucket already exists.
+   * Used by `StorageBootstrapService` on app startup in dev/test so a fresh
+   * `pnpm db:nuke && pnpm db:up` doesn't require a manual `mc mb` step.
+   * Production skips this — buckets are pre-provisioned by DevOps.
+   */
+  ensureBucket(): Promise<void>;
 }
