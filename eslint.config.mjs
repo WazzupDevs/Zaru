@@ -106,6 +106,9 @@ export default [
       // include so projectService can't resolve it. Lint-staged would
       // otherwise crash on commits that touch this file.
       "prisma/**",
+      // tsup config runs via tsup CLI's own loader, not part of any
+      // tsconfig include — same projectService friction as seed.ts.
+      "**/tsup.config.ts",
       // apps/admin runs its own next/core-web-vitals lint pipeline via
       // `next lint`. Excluding here keeps the strict TS rules from
       // double-flagging Next-generated files (next-env.d.ts triple-slash,
