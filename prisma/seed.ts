@@ -133,10 +133,68 @@ async function seedWeddingCar(): Promise<void> {
   }
 }
 
+/**
+ * Bootstrap admin user — ONLY in dev/test. Production runs of `pnpm db:seed`
+ * skip this and emit a warning so anyone running it on prod knows to use the
+ * `pnpm api:promote-admin <phone>` CLI instead. ADR 0015.
+ */
+async function seedBootstrapAdmin(): Promise<void> {
+  const env = process.env.NODE_ENV;
+  if (env === "production") {
+    // eslint-disable-next-line no-console
+    console.log(
+      "⚠️  NODE_ENV=production — admin bootstrap skipped. Use `pnpm api:promote-admin` CLI.",
+    );
+    return;
+  }
+  const phone = process.env.BOOTSTRAP_ADMIN_PHONE;
+  if (phone === undefined || phone === "") {
+    // eslint-disable-next-line no-console
+    console.log("ℹ️  BOOTSTRAP_ADMIN_PHONE not set — skipping admin seed.");
+    return;
+  }
+  if (!/^\+90(5)\d{9}$/.test(phone)) {
+    // eslint-disable-next-line no-console
+    console.log(`✗ BOOTSTRAP_ADMIN_PHONE invalid (${phone}) — must be TR E.164 mobile.`);
+    return;
+  }
+
+  // The user.phoneE164 partial unique index covers active rows only, so we
+  // findFirst+upsert by hand instead of relying on Prisma's where-by-unique.
+  const existing = await prisma.user.findFirst({
+    where: { phoneE164: phone, deletedAt: null },
+  });
+  if (existing) {
+    if (existing.role !== "ADMIN") {
+      await prisma.user.update({ where: { id: existing.id }, data: { role: "ADMIN" } });
+      // eslint-disable-next-line no-console
+      console.log(`✓ Existing user ${phone} promoted to ADMIN.`);
+    } else {
+      // eslint-disable-next-line no-console
+      console.log(`✓ Admin user ${phone} already in place.`);
+    }
+    return;
+  }
+
+  await prisma.user.create({
+    data: {
+      phoneE164: phone,
+      role: "ADMIN",
+      phoneVerifiedAt: new Date(),
+      displayName: "Admin (Bootstrap)",
+    },
+  });
+  // eslint-disable-next-line no-console
+  console.log(`✓ Admin user bootstrapped: ${phone}`);
+}
+
 async function main(): Promise<void> {
   // eslint-disable-next-line no-console
   console.log("Seeding wedding-car category...");
   await seedWeddingCar();
+  // eslint-disable-next-line no-console
+  console.log("Seeding bootstrap admin...");
+  await seedBootstrapAdmin();
   // eslint-disable-next-line no-console
   console.log("Seed complete.");
 }

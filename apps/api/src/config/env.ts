@@ -40,6 +40,14 @@ export const envSchema = z.object({
   // Hard upper bound enforced via presigned PUT Content-Length signing.
   // Client cannot bypass — S3 reject the upload.
   STORAGE_MAX_FILE_SIZE_BYTES: z.coerce.number().int().positive().default(15728640),
+
+  // --- Bootstrap admin (A3c) ---
+  // Dev/test only — production seed run skips this and warns. Use the
+  // `pnpm api:promote-admin <phone>` CLI in production. ADR 0015.
+  BOOTSTRAP_ADMIN_PHONE: z
+    .string()
+    .regex(/^\+90(5)\d{9}$/, "BOOTSTRAP_ADMIN_PHONE must be a TR mobile in E.164 format")
+    .optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;
