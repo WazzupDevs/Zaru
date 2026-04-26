@@ -84,6 +84,10 @@ export async function setup(): Promise<void> {
   process.env.STORAGE_FORCE_PATH_STYLE = "true";
   process.env.STORAGE_PUBLIC_URL = `${storageEndpoint}/${storageBucket}`;
   process.env.STORAGE_MAX_FILE_SIZE_BYTES ??= "15728640";
+  // Pricing / distance — dummy Google key flips PricingModule to mock haversine.
+  process.env.GOOGLE_MAPS_API_KEY ??= "AIzaSy_DUMMY_TEST_FIXED_KEY_FOR_INTEGRATION";
+  process.env.GOOGLE_MAPS_RATE_LIMIT_PER_SECOND ??= "10";
+  process.env.PRICE_QUOTE_TTL_SECONDS ??= "900";
 
   // Bootstrap the test bucket + open anonymous download (so publicUrl works
   // in tests just like dev does via mc).
