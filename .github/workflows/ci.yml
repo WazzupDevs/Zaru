@@ -161,10 +161,13 @@ jobs:
           NODE_ENV: production
           DATABASE_URL: postgresql://eventfleet:eventfleet@localhost:5432/eventfleet?schema=public
           REDIS_URL: redis://localhost:6379
-          # Synthetic secrets — explicitly labelled so accidental copy is obvious.
-          JWT_ACCESS_SECRET: ci-smoke-access-secret-not-for-production-use-1234567890ab
-          JWT_REFRESH_SECRET: ci-smoke-refresh-secret-not-for-production-use-1234567890
-          PII_HMAC_SECRET: ci-smoke-pii-hmac-secret-not-for-production-use-1234567890
+          # Test-only 64-char hex secrets, INTENTIONALLY UNIFORM and NOT random.
+          # Zod env schema requires >= 64 hex chars; uniform patterns make the
+          # "do not copy to production" signal obvious. Real prod secrets live
+          # in Infisical/Doppler, never hardcoded here.
+          JWT_ACCESS_SECRET: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          JWT_REFRESH_SECRET: "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+          PII_HMAC_SECRET: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
           STORAGE_PROVIDER: minio
           STORAGE_ENDPOINT: http://localhost:9000
           STORAGE_ACCESS_KEY_ID: minioadmin
