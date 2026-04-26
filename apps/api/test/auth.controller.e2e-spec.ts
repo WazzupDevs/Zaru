@@ -5,15 +5,27 @@ import request from "supertest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { AppModule } from "../src/app.module";
+import { uniquePhone } from "./helpers/phone-factory";
 import { PrismaService } from "../src/common/prisma/prisma.service";
+import { RedisService } from "../src/common/redis/redis.service";
 import { configureApp } from "../src/configure-app";
 import { MockSmsSender } from "../src/modules/identity/infrastructure/sms/mock-sms-sender";
 
 const OTP_CODE_REGEX = /(\d{6})/;
 
+/**
+ * Sliding-window IP rate limit defaults to 3 OTP requests per minute. Without
+ * unique IPs across sibling tests, the 4th `POST /auth/otp/request` in a suite
+ * trips the IP bucket and the test that owns it sees a 429. Two layers of
+ * defense:
+ *  1. Each test uses `uniquePhone()` (avoids per-phone bucket cross-talk).
+ *  2. `beforeEach` purges all `rl:otp:*` Redis keys (avoids per-IP bucket
+ *     cross-talk when supertest defaults to ::1 / 127.0.0.1).
+ */
 describe("Auth e2e — full lifecycle", () => {
   let app: NestExpressApplication;
   let prisma: PrismaService;
+  let redis: RedisService;
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -25,21 +37,24 @@ describe("Auth e2e — full lifecycle", () => {
     configureApp(app);
     await app.init();
     prisma = app.get(PrismaService);
+    redis = app.get(RedisService);
   });
 
   afterAll(async () => {
     await app.close();
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     MockSmsSender._testOnlyReset();
+    const rlKeys = await redis.client.keys("rl:otp:*");
+    if (rlKeys.length) await redis.client.del(...rlKeys);
   });
 
   describe("POST /auth/otp/request", () => {
     it("returns 202 + requestId+expiresAt on valid TR mobile", async () => {
       const res = await request(app.getHttpServer())
         .post("/auth/otp/request")
-        .send({ phone: "+905551112233" });
+        .send({ phone: uniquePhone() });
 
       expect(res.status).toBe(202);
       expect(res.body).toMatchObject({
@@ -59,7 +74,7 @@ describe("Auth e2e — full lifecycle", () => {
     });
 
     it("idempotency: same key + same body → replay (single OTP row in DB)", async () => {
-      const phone = "+905552223344";
+      const phone = uniquePhone();
       const idemKey = `e2e-idem-${Date.now().toString()}`;
 
       const first = await request(app.getHttpServer())
@@ -81,23 +96,25 @@ describe("Auth e2e — full lifecycle", () => {
 
     it("idempotency: same key + different body → 409 CONFLICT", async () => {
       const idemKey = `e2e-idem-collide-${Date.now().toString()}`;
+      const phoneA = uniquePhone();
+      const phoneB = uniquePhone();
 
       const first = await request(app.getHttpServer())
         .post("/auth/otp/request")
         .set("Idempotency-Key", idemKey)
-        .send({ phone: "+905553334455" });
+        .send({ phone: phoneA });
       expect(first.status).toBe(202);
 
       const collide = await request(app.getHttpServer())
         .post("/auth/otp/request")
         .set("Idempotency-Key", idemKey)
-        .send({ phone: "+905554445566" });
+        .send({ phone: phoneB });
       expect(collide.status).toBe(409);
       expect(collide.body.code).toBe("CONFLICT");
     });
 
     it("writes OtpRequested to outbox in same transaction as OTP row", async () => {
-      const phone = "+905556667788";
+      const phone = uniquePhone();
       const res = await request(app.getHttpServer())
         .post("/auth/otp/request")
         .set("X-Forwarded-For", "192.0.2.50")
@@ -136,7 +153,7 @@ describe("Auth e2e — full lifecycle", () => {
     }
 
     it("happy path: verify returns tokens, /auth/me works with access token", async () => {
-      const phone = "+905559001001";
+      const phone = uniquePhone();
       const { requestId, code } = await requestOtpAndGetCode(phone);
 
       const verify = await request(app.getHttpServer())
@@ -170,7 +187,7 @@ describe("Auth e2e — full lifecycle", () => {
     });
 
     it("wrong code returns INVALID_OTP with remainingAttempts", async () => {
-      const phone = "+905559002002";
+      const phone = uniquePhone();
       const { requestId } = await requestOtpAndGetCode(phone, "192.0.2.52");
 
       const wrong = await request(app.getHttpServer())
@@ -183,7 +200,7 @@ describe("Auth e2e — full lifecycle", () => {
     });
 
     it("invalidates OTP after 5 wrong attempts (6th is consumed/not-found)", async () => {
-      const phone = "+905559003003";
+      const phone = uniquePhone();
       const { requestId } = await requestOtpAndGetCode(phone, "192.0.2.53");
 
       for (let i = 0; i < 5; i++) {
@@ -203,7 +220,7 @@ describe("Auth e2e — full lifecycle", () => {
     });
 
     it("refresh rotates tokens; reuse triggers family revoke (401)", async () => {
-      const phone = "+905559004004";
+      const phone = uniquePhone();
       const { requestId, code } = await requestOtpAndGetCode(phone, "192.0.2.54");
       const verify = await request(app.getHttpServer())
         .post("/auth/otp/verify")

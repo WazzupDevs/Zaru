@@ -22,6 +22,7 @@ const SOFT_DELETE_MODELS = new Set<string>([
   "DriverProfile",
   "Vehicle",
   "Document",
+  "VehicleAvailability",
 ]);
 
 /**

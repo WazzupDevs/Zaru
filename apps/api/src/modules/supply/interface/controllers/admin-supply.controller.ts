@@ -17,17 +17,23 @@ import {
   type DriverProfileResponse,
   type RejectDriverInput,
   type ReviewDocumentInput,
+  type VehicleResponse,
 } from "@event-fleet/shared-types";
 
 import { CurrentUser, type AuthUser } from "../../../../common/auth/current-user.decorator";
 import { Roles } from "../../../../common/auth/roles.decorator";
 import { IdempotencyInterceptor } from "../../../../common/idempotency/idempotency.interceptor";
 import { ZodValidationPipe } from "../../../../common/pipes/zod-validation.pipe";
+import { ActivateVehicleUseCase } from "../../application/use-cases/activate-vehicle.use-case";
 import { ApproveDriverUseCase } from "../../application/use-cases/approve-driver.use-case";
 import { ListPendingDriversUseCase } from "../../application/use-cases/list-pending-drivers.use-case";
 import { RejectDriverUseCase } from "../../application/use-cases/reject-driver.use-case";
 import { ReviewDocumentUseCase } from "../../application/use-cases/review-document.use-case";
-import { toDocumentResponse, toDriverProfileResponse } from "../mappers/driver-profile.mapper";
+import {
+  toDocumentResponse,
+  toDriverProfileResponse,
+  toVehicleResponse,
+} from "../mappers/driver-profile.mapper";
 
 @Controller("admin/supply")
 @Roles("ADMIN")
@@ -37,6 +43,7 @@ export class AdminSupplyController {
     private readonly approve: ApproveDriverUseCase,
     private readonly reject: RejectDriverUseCase,
     private readonly review: ReviewDocumentUseCase,
+    private readonly activate: ActivateVehicleUseCase,
   ) {}
 
   @Get("driver-profiles")
@@ -95,5 +102,16 @@ export class AdminSupplyController {
       { userId: admin.id },
     );
     return toDocumentResponse(result);
+  }
+
+  @Post("vehicles/:id/activate")
+  @HttpCode(HttpStatus.OK)
+  @UseInterceptors(IdempotencyInterceptor)
+  async activateVehicle(
+    @Param("id") id: string,
+    @CurrentUser() admin: AuthUser,
+  ): Promise<VehicleResponse> {
+    const result = await this.activate.execute(id, { userId: admin.id });
+    return toVehicleResponse(result);
   }
 }

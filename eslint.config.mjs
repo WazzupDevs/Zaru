@@ -106,6 +106,9 @@ export default [
       // include so projectService can't resolve it. Lint-staged would
       // otherwise crash on commits that touch this file.
       "prisma/**",
+      // Admin / ops CLI scripts run via tsx outside of any tsconfig include
+      // — same projectService friction as seed.
+      "apps/api/scripts/**",
       // tsup config runs via tsup CLI's own loader, not part of any
       // tsconfig include — same projectService friction as seed.ts.
       "**/tsup.config.ts",

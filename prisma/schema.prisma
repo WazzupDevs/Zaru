@@ -254,6 +254,7 @@ model DriverProfile {
   user             User                   @relation(fields: [userId], references: [id])
   vehicles         Vehicle[]
   documents        Document[]
+  availabilities   VehicleAvailability[]
 
   @@index([status])
   @@index([nationalIdHash])
@@ -268,25 +269,26 @@ enum VehicleStatus {
 }
 
 model Vehicle {
-  id              String        @id @default(dbgenerated("uuidv7()")) @db.Uuid
-  driverProfileId String        @map("driver_profile_id") @db.Uuid
-  vehicleTypeId   String        @map("vehicle_type_id") @db.Uuid
+  id              String                @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  driverProfileId String                @map("driver_profile_id") @db.Uuid
+  vehicleTypeId   String                @map("vehicle_type_id") @db.Uuid
   // Stored normalized (PlateVO output): uppercase, no spaces.
-  plateNumber     String        @map("plate_number")
+  plateNumber     String                @map("plate_number")
   brand           String
   model           String
   year            Int
   color           String
   // Polymorphic per-category attributes (catalog scope=VEHICLE definitions).
-  attributes      Json          @default("{}")
-  photoKeys       String[]      @map("photo_keys")
-  status          VehicleStatus @default(DRAFT)
-  createdAt       DateTime      @default(now()) @map("created_at")
-  updatedAt       DateTime      @updatedAt @map("updated_at")
-  deletedAt       DateTime?     @map("deleted_at")
-  version         Int           @default(0)
-  driverProfile   DriverProfile @relation(fields: [driverProfileId], references: [id])
-  vehicleType     VehicleType   @relation(fields: [vehicleTypeId], references: [id])
+  attributes      Json                  @default("{}")
+  photoKeys       String[]              @map("photo_keys")
+  status          VehicleStatus         @default(DRAFT)
+  createdAt       DateTime              @default(now()) @map("created_at")
+  updatedAt       DateTime              @updatedAt @map("updated_at")
+  deletedAt       DateTime?             @map("deleted_at")
+  version         Int                   @default(0)
+  driverProfile   DriverProfile         @relation(fields: [driverProfileId], references: [id])
+  vehicleType     VehicleType           @relation(fields: [vehicleTypeId], references: [id])
+  availabilities  VehicleAvailability[]
 
   @@index([driverProfileId])
   @@index([status])
@@ -333,4 +335,31 @@ model Document {
   @@index([vehicleId])
   @@index([expiresAt])
   @@map("documents")
+}
+
+enum AvailabilityType {
+  BLOCKED // driver-initiated calendar block
+  BOOKED // booking-initiated reservation (A4 booking will populate)
+}
+
+model VehicleAvailability {
+  id              String           @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  vehicleId       String           @map("vehicle_id") @db.Uuid
+  driverProfileId String           @map("driver_profile_id") @db.Uuid
+  startAt         DateTime         @map("start_at")
+  endAt           DateTime         @map("end_at")
+  type            AvailabilityType @default(BLOCKED)
+  // Booking aggregate id — A4 booking module fills this when an actual
+  // booking blocks the calendar. NULL for driver-side BLOCKED rows.
+  bookingId       String?          @map("booking_id") @db.Uuid
+  reason          String?
+  createdAt       DateTime         @default(now()) @map("created_at")
+  updatedAt       DateTime         @updatedAt @map("updated_at")
+  deletedAt       DateTime?        @map("deleted_at")
+  vehicle         Vehicle          @relation(fields: [vehicleId], references: [id])
+  driverProfile   DriverProfile    @relation(fields: [driverProfileId], references: [id])
+
+  @@index([vehicleId, startAt, endAt])
+  @@index([startAt, endAt])
+  @@map("vehicle_availabilities")
 }

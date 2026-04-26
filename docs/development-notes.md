@@ -531,3 +531,244 @@ tek implementation. Aynı zamanda `TxClient` tipi de `common/persistence/
 tx-client.ts`'te. Identity ports artık TxClient'ı oradan import ediyor.
 Cross-module port paylaşımı = common/\* altında, module-specific kalır
 module altında.
+
+---
+
+## 2026-04-25 — Session A3c
+
+### Half-open `[start, end)` interval kuralı
+
+Vehicle availability overlap kontrolünde half-open kullandık: `[10:00, 12:00)`
+ile `[12:00, 14:00)` çakışmaz (adjacent ranges OK). Standart "iş takvimi"
+modeli — biri 12:00'de bitince diğeri 12:00'de başlayabilir. Prisma DSL'de:
+
+```ts
+where: {
+  startAt: { lt: endAt },     // existing.startAt < requested.endAt
+  endAt: { gt: startAt },     // existing.endAt > requested.startAt
+}
+```
+
+Eşitlik bilinçli olarak yok. PostgreSQL `tstzrange(start, end, '[)')` aynı
+semantik — gelecekte GiST index ile değiştirilirse aynı sonuç.
+
+### `tstzrange` + `&&` overlap operatörü (revisit triggeri)
+
+Şu an availability conflict sorgusu B-tree composite index ile çalışıyor
+(`vehicle_id, start_at, end_at`). PostgreSQL'in native `&&` operatörü ile
+range query daha okunaklı ama:
+
+- `tstzrange(start_at, end_at, '[)') && tstzrange($1, $2, '[)')` — GiST
+  index gerek (`btree_gist` extension + composite GiST).
+- Şu an N << 10K availability/vehicle. B-tree yeterli.
+- Revisit: per-driver 1000+ availability rows veya milisaniye altı latency
+  gerektiğinde GiST'e geç + extension yükle.
+
+### Bucket auto-ensure idempotency
+
+S3 SDK `CreateBucketCommand` **idempotent değil** — bucket varken
+`BucketAlreadyOwnedByYou` veya `BucketAlreadyExists` throw eder. Pattern:
+
+```ts
+async ensureBucket() {
+  try { await client.send(new HeadBucketCommand({Bucket})); return; }
+  catch (err) { if (!isNotFound(err)) throw err; }
+  try { await client.send(new CreateBucketCommand({Bucket})); }
+  catch (err) { if (!isAlreadyOwned(err)) throw err; }
+}
+```
+
+Iki try/catch — HeadBucket önce (race condition'da gereksiz CreateBucket
+'ı atlatır), CreateBucket de safe. Production'da skip — bucket DevOps
+provision eder.
+
+### Seed admin bootstrap NODE_ENV guard
+
+`prisma/seed.ts`'de admin user yaratımı `NODE_ENV === "production"` kontrolü
+ile koruma altında. Production'da `pnpm db:seed` admin yaratmaz, sadece
+warn log emit eder. Prod admin için `pnpm api:promote-admin <phone>` CLI.
+ADR 0015.
+
+### Promote admin CLI ESLint exclusion
+
+`apps/api/scripts/promote-admin.ts` `tsx` ile çalışıyor, herhangi bir
+tsconfig include'ında değil — root `eslint.config.mjs` ignore'una
+`apps/api/scripts/**` eklendi (seed.ts ile aynı pattern, A3a precedent).
+
+### Cross-module write — User.role promotion (CLI ekstrası)
+
+A3b'de approve use case'i içinde `tx.user.update` ile `User.role = DRIVER`
+yazımı ADR 0005 istisnası olarak kabul edildi. A3c'de aynı pattern
+**promote-admin CLI'da** tekrarlanıyor:
+
+```ts
+await prisma.$transaction(async (tx) => {
+  await tx.user.update({ where: { id: user.id }, data: { role: "ADMIN" } });
+  await tx.outboxEvent.create({
+    data: { eventType: "identity.UserRolePromoted", payload: {} },
+  });
+});
+```
+
+CLI bağlamında bu daha az problemli — script tek seferlik, modüler izolasyon
+runtime kuralı değil tooling kuralı. Ama outbox event'i atomik tutmak için
+aynı tx şart.
+
+### Next.js 15 `useSearchParams` Suspense bailout
+
+Next 15 build'de `useSearchParams` kullanan herhangi bir client component
+**Suspense ile sarılmalı** yoksa prerender bailout error. Pattern:
+
+```tsx
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<Loading />}>
+      <LoginForm />
+    </Suspense>
+  );
+}
+```
+
+Default export Suspense wrapper'a, hook child component'a. A3c login
+sayfasında bu hatayla karşılaştık.
+
+### Admin auth: localStorage MVP
+
+`apps/admin/src/lib/api-client.ts` access + refresh token'larını localStorage'da
+tutuyor. **MVP kararı, prod-grade değil:**
+
+- XSS riski: malicious script localStorage'a erişebilir. CSP + güvenli
+  3rd-party deps + bilinçli kod kuralı yeterli savunma A3c için.
+- A4'te httpOnly cookie + CSRF token + SameSite=Strict pattern'e geçiş.
+  Customer mobile app aynı backend'i kullanırken bu değişim shared.
+
+`useRequireAuth` hook her sayfada `/auth/me` çağırır — token live olduğunu
+ve role'ün hâlâ ADMIN olduğunu doğrular. Token revoke / role downgrade
+durumunda bir sonraki sayfa load'unda /login'e yönlendirir.
+
+### Minimal UI primitives (shadcn alternative)
+
+shadcn CLI yerine `clsx` + `tailwind-merge` + `class-variance-authority` ile
+Button + Input + Card + Table elle yazıldı (`apps/admin/src/components/ui/`).
+Sebep:
+
+- shadcn CLI Radix UI komponentleri (15+ npm package) ekliyor — A3c için
+  overkill (table, button, input, card yetiyor).
+- Driver approval queue Radix dialog gerektirmedi (prompt() MVP yeterli).
+- Genişleme: dialog/select/dropdown gerektiğinde `pnpm dlx shadcn@latest add`
+  çağrısı çalışır (components.json yoksa init önce).
+
+### Admin ESLint strict parity (Option B uygulandı)
+
+A3a'dan TODO kapandı. `apps/admin/.eslintrc.json` içine:
+
+- `@typescript-eslint/no-explicit-any: error`
+- `@typescript-eslint/no-non-null-assertion: error`
+- `@typescript-eslint/consistent-type-imports: error`
+- `@typescript-eslint/no-unused-vars: error`
+- `import/order: error` (root config ile aynı groups + alphabetize)
+- `no-console: error` (warn/error allowlist)
+
+Root `eslint.config.mjs` flat config admin'i hâlâ ignore ediyor — admin
+kendi `.eslintrc.json` (legacy format, `next lint` zorunlu) ile strict
+seviyede çalışıyor. Next 16'da `next lint` deprecated; o zaman flat'a
+geçiş + root config'e admin scope.
+
+---
+
+## 2026-04-25 — Integration test green hotfix
+
+### Problem
+
+A3c merge sonrası 3 integration kırmızı (lint/typecheck/build/unit yeşil):
+
+1. `storage.integration-spec.ts` — `StorageBootstrapService` `InjectPinoLogger`
+   ile `PinoLogger`'ı inject ediyor; test module'ü `LoggerModule.forRoot()`
+   import etmediği için DI fail. 5 test skip.
+2. `auth.controller.e2e-spec.ts` — A2c-followup'ta eklenen Redis sliding
+   window rate limiter idempotency testlerinde 429 dönüyor. Suite içinde
+   hardcoded `+90555` phone'lar + supertest default IP (`::1`) → per-IP
+   minute limit 3 saniye içinde dolu, 4. test 429 alıyor.
+3. `driver-onboarding-lifecycle.e2e-spec.ts` — Testcontainers temiz DB,
+   `wedding-car` kategorisi yok, `findActiveVehicleType` null dönüyor.
+
+Production akışında üçü de doğru davranış — test setup eksiklikleri.
+
+### Çözümler
+
+**1. Storage bootstrap test'te override (no-op).** `setup-integration.ts`
+zaten MinIO container'ında bucket'ı `S3Client + CreateBucketCommand` ile
+yaratıyor; test'te ayrıca bootstrap çalıştırmak gereksiz. `LoggerModule`
+import etmek yerine provider override:
+
+```ts
+.overrideProvider(StorageBootstrapService)
+.useValue({ onApplicationBootstrap: async () => { /* no-op */ } })
+```
+
+`overrideProvider().useValue()` NestJS DI'a "constructor çağırma" der —
+PinoLogger DI hiç tetiklenmez. LoggerModule import etmek "sadece DI gerek"
+diye fazla geniş.
+
+**2. `uniquePhone()` test util + Redis `rl:otp:*` cleanup beforeEach'te.**
+Tek katman yetmedi: phone unique olsa bile suite içindeki 4. OTP request'i
+default IP'den geliyor, per-IP-minute (3) 429 üretiyor. İki katman:
+
+- `uniquePhone()` — `+905XXXXXXXXX` random, per-phone bucket çakışmasın
+- `redis.client.del('rl:otp:*')` beforeEach'te — per-IP bucket suite
+  arası reset
+
+Production rate limiter dokunulmadı; test kendi izolasyonunu sağlıyor.
+`returning-user.integration-spec.ts`'deki precedent'i taşıdık.
+
+**3. `setupCatalogFixtures(prisma)` helper.** Lifecycle test'in ihtiyacı
+olan minimum data (1 ServiceCategory + 1 VehicleType + 3 VEHICLE-scope
+attribute def `trim_color` / `has_air_conditioning` / `has_chauffeur`).
+Tam seed admin user + 5 attribute def yaratıyor — test için overkill.
+Helper idempotent (upsert by slug); diğer test'ler de re-use edebilir.
+
+### Side fix: driver-profile.integration-spec.ts FK
+
+A3b'nin `driver-profile.integration-spec.ts` beforeEach'inde availability
+cleanup yoktu. Lifecycle test bir VehicleAvailability bırakırsa, bir
+sonraki suite çalıştığında `vehicle.deleteMany()` FK violate ediyordu
+(`vehicle_availabilities_vehicle_id_fkey`). Cleanup order'ına
+`vehicleAvailability.deleteMany({})` eklendi — A3c migration etkisi.
+
+Genel kural: **yeni FK eklediğin migration sonrası, mevcut test
+beforeEach cleanup'larını gözden geçir.** Cross-suite contamination en
+kolay buradan çıkar.
+
+### CI gap kapatıldı: Prod build smoke job
+
+`.github/workflows/ci.yml`'a `prod-build-smoke` job. Postgres + Redis +
+MinIO services, `pnpm build` + `node apps/api/dist/main.js` + `/healthz`
+30 saniye polling. Yakalayacağı:
+
+- CJS/ESM regression (dual-format gibi)
+- Zod env validation hataları (yeni env eklenince schema güncellenmemişse)
+- NestJS DI resolution hataları (storage bootstrap gibi prod yolda)
+- Boot süresi patlamaları (Faz 2'de payment, booking eklendikçe)
+
+### Lessons learned
+
+1. **Lokal smoke yapılmadan merge etmek 3 sessiz hata bıraktı.** Solo
+   geliştiricinin "branch protection yok" disiplini eksiği — gelecek
+   PR'larda lokal `pnpm test:integration` checklist zorunlu (PR template
+   güncelle A4 başında).
+2. **Vitest ESM ≠ nest start CJS.** Test path runtime hatalarını
+   yakalamıyor; prod build smoke job bu kapıyı kapattı.
+3. **Rate limiter doğru çalışıyor (429 dönüyor!)** ama test'ler bunu
+   bilmiyordu. Production behavior değişmedi, test'ler katılaştı.
+4. **Yeni FK = beforeEach cleanup audit zorunlu.** Cross-suite
+   contamination her zaman yeni schema göçüne tepkisi geç olan eski test'ten.
+
+### Helper konumu konvansiyonu
+
+`apps/api/test/helpers/` altına paylaşılan test util'ları:
+
+- `phone-factory.ts` — `uniquePhone()`
+- `catalog-fixtures.ts` — `setupCatalogFixtures()`
+
+Yeni helper eklenince buraya. Module-spesifik fixture'lar (`booking/`,
+`payment/`) A4'te eklenecek alt klasörlerde.

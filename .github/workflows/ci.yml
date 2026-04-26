@@ -102,3 +102,94 @@ jobs:
         run: pnpm build
       - name: Integration tests
         run: pnpm --filter @event-fleet/api test:integration
+
+  prod-build-smoke:
+    # Catches CJS/ESM regressions and Zod env-validation failures that the
+    # Vitest-based integration suite cannot see (Vitest is ESM-native, while
+    # `nest start` runs the API through CJS loader). Boots the prod build
+    # against a real Postgres + Redis and probes /healthz.
+    #
+    # MinIO is intentionally NOT a service container here: GitHub Actions
+    # service containers don't honour Docker Compose's `command:` override,
+    # so the official MinIO image starts in help-mode and exits. We don't
+    # need a real bucket either — `/healthz` is dependency-free
+    # (`{ status: "ok" }`), and `StorageBootstrapService.onApplicationBootstrap`
+    # short-circuits when NODE_ENV=production. Storage round-trip stays
+    # covered by the Testcontainers-based `storage.integration-spec.ts`.
+    name: Prod build smoke
+    runs-on: ubuntu-latest
+    needs: [build]
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: eventfleet
+          POSTGRES_PASSWORD: eventfleet
+          POSTGRES_DB: eventfleet
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U eventfleet"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build workspace packages
+        run: pnpm build
+      - name: Apply migrations
+        env:
+          DATABASE_URL: postgresql://eventfleet:eventfleet@localhost:5432/eventfleet?schema=public
+        run: pnpm prisma migrate deploy --schema prisma/schema.prisma
+      - name: Boot API in prod mode and probe /healthz
+        env:
+          NODE_ENV: production
+          DATABASE_URL: postgresql://eventfleet:eventfleet@localhost:5432/eventfleet?schema=public
+          REDIS_URL: redis://localhost:6379
+          # Test-only 64-char hex secrets, INTENTIONALLY UNIFORM and NOT random.
+          # Zod env schema requires >= 64 hex chars; uniform patterns make the
+          # "do not copy to production" signal obvious. Real prod secrets live
+          # in Infisical/Doppler, never hardcoded here.
+          JWT_ACCESS_SECRET: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          JWT_REFRESH_SECRET: "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+          PII_HMAC_SECRET: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+          STORAGE_PROVIDER: minio
+          STORAGE_ENDPOINT: http://localhost:9000
+          STORAGE_ACCESS_KEY_ID: minioadmin
+          STORAGE_SECRET_ACCESS_KEY: minioadmin
+          STORAGE_BUCKET: ci-smoke
+          STORAGE_PUBLIC_URL: http://localhost:9000/ci-smoke
+          PORT: "3000"
+        run: |
+          # NestJS `nest build` emits to dist/src/main.js (it preserves the
+          # rootDir layout); `dist/main.js` doesn't exist.
+          node apps/api/dist/src/main.js &
+          API_PID=$!
+          echo "API pid=$API_PID, waiting for /healthz..."
+          for i in {1..30}; do
+            if curl -fsS http://localhost:3000/healthz; then
+              echo
+              echo "API booted successfully on attempt $i"
+              kill $API_PID 2>/dev/null || true
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "API did not respond on /healthz within 30 seconds"
+          kill $API_PID 2>/dev/null || true
+          exit 1

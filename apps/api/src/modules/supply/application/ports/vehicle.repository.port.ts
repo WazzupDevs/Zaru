@@ -46,4 +46,5 @@ export interface VehicleRepositoryPort {
     expectedVersion: number,
     attributes: Record<string, unknown>,
   ): Promise<boolean>;
+  setStatus(tx: TxClient, id: string, status: VehicleStatus): Promise<void>;
 }

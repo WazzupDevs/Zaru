@@ -1148,6 +1148,217 @@ A3b merge sonrası).
 
 ---
 
+## 2026-04-25 — Session A3c: Faz 1 Kapanışı
+
+Branch: `feat/supply-availability-admin` (A3a + A3b main'e merge edildi:
+PR #7 + #8). Hedef: Faz 1'i bitir — vehicle availability, admin bootstrap,
+admin panel approval queue, full lifecycle e2e, ESLint parity, Phase 1
+closeout dokümanı.
+
+### Done
+
+**Storage bucket auto-ensure (G0.5)**
+
+- A3b'de auto-ensure yoktu; bu oturumda eklendi.
+- `StoragePort.ensureBucket()` interface'e eklendi; S3Storage impl
+  HeadBucket → CreateBucket idempotent pattern (BucketAlreadyOwnedByYou
+  ve BucketAlreadyExists handle).
+- `StorageBootstrapService` `OnApplicationBootstrap` lifecycle hook'u
+  ile API startup'ta çalışır; `NODE_ENV === "production"` durumunda skip
+  - warn log.
+
+**Admin bootstrap (G1)**
+
+- `BOOTSTRAP_ADMIN_PHONE` env Zod schema'ya eklendi (TR mobile regex,
+  optional). Turbo `globalEnv`'e + `.env.example` placeholder.
+- `prisma/seed.ts` `seedBootstrapAdmin()` fonksiyonu: prod'da skip,
+  dev/test'te `findFirst` + `update/create` (partial unique index
+  uyumlu). User pre-verified (`phoneVerifiedAt = now()`).
+- `apps/api/scripts/promote-admin.ts` CLI — phone format check, user
+  existence check, role update + `identity.UserRolePromoted` outbox
+  event (`promotedVia: "cli"` audit metadata). Tek atomik tx.
+- Root `package.json`: `pnpm api:promote-admin <phone>` script.
+- `eslint.config.mjs` ignores'a `apps/api/scripts/**` eklendi (seed.ts
+  precedent — tsx + projectService friction).
+- ADR 0015 yazıldı.
+
+**VehicleAvailability (G2)**
+
+- `prisma/schema.prisma`: `AvailabilityType` enum (BLOCKED, BOOKED) +
+  `VehicleAvailability` model (vehicle/driver FK + start_at/end_at +
+  optional booking_id A4'e hazır).
+- Migration `20260425000000_add_vehicle_availabilities` manuel SQL
+  (B-tree composite index + start_at/end_at B-tree). GiST + tstzrange
+  şu an skip; B-tree yeterli, revisit trigger dev-notes'ta.
+- `SOFT_DELETE_MODELS` set'ine `VehicleAvailability` eklendi.
+- Shared-types `supply/availability.ts`: `BlockAvailabilityInput`,
+  `AvailabilityResponse`, `CheckVehicleFreeQuery/Response`, `ConflictItem`.
+- Domain errors: `InvalidAvailabilityRangeError`, `PastDateError`,
+  `VehicleNotActiveError`, `AvailabilityConflictError` (with conflicts
+  detail), `AvailabilityNotFoundError`, `CannotRemoveBookedAvailabilityError`.
+- Domain events: `AvailabilityBlocked`, `AvailabilityUnblocked`,
+  `VehicleActivated`.
+- `VehicleAvailabilityRepositoryPort` + Prisma impl. **Half-open
+  `[startAt, endAt)` overlap rule:**
+  `existing.startAt < requested.endAt AND existing.endAt > requested.startAt`.
+  Adjacent ranges OK (12:00 bitiş + 12:00 başlangıç çakışmaz).
+- 4 use case: `BlockAvailabilityUseCase`, `UnblockAvailabilityUseCase`,
+  `CheckVehicleFreeUseCase` (public, auth gerektirmez), `ListAvailabilityUseCase`.
+- `BlockAvailabilityUseCase` 8 unit test: happy + range invalid + past
+  date + non-active vehicle + non-owner + full overlap + partial overlap
+  - adjacent ranges OK.
+- `AvailabilityController` (driver-facing POST/GET/DELETE + public GET check).
+
+**ActivateVehicle admin endpoint (G2.5)**
+
+- `VehicleRepositoryPort.setStatus(tx, id, status)` eklendi.
+- `ActivateVehicleUseCase`: DRAFT/PENDING_APPROVAL → ACTIVE, idempotent
+  (already ACTIVE = no-op), driver APPROVED guard, SUSPENDED reject.
+  `VehicleActivated` outbox event.
+- `AdminSupplyController.activateVehicle` (`/admin/supply/vehicles/:id/activate`,
+  Idempotency-Key, ADMIN role).
+
+**Full lifecycle e2e (G3)**
+
+- `apps/api/test/driver-onboarding-lifecycle.e2e-spec.ts` — Faz 1 closeout
+  proof. 14 adım:
+  1-4: Customer OTP login → driver profile DRAFT
+  5: 4 evrak presigned PUT round-trip (DRIVER_LICENSE, IDENTITY_CARD,
+  VEHICLE_REGISTRATION, INSURANCE)
+  6-7: Submit → DOCUMENTS_PENDING; admin OTP login (bootstrap admin
+  beforeEach'te direkt Prisma insert)
+  8-9: Admin pending queue list + approve → APPROVED + role DRIVER
+  10: Existing customer token /auth/me → role DRIVER (JwtAuthGuard DB
+  hydration)
+  11-12: Vehicle register (wedding-car category) + admin activate
+  13-14: Availability block + public check (overlap = busy, non-overlap
+  = free)
+  15: Outbox event types verification (7 distinct types: DriverProfileCreated,
+  DocumentUploaded, DriverSubmittedForReview, DriverApproved,
+  VehicleRegistered, VehicleActivated, AvailabilityBlocked).
+
+**Admin panel (G4)**
+
+- `clsx` + `tailwind-merge` + `class-variance-authority` deps eklendi.
+  shadcn CLI yerine minimal UI primitives elle yazıldı (Radix dependency
+  yükü gereksiz):
+  - `lib/cn.ts` (twMerge + clsx)
+  - `components/ui/button.tsx` (default/destructive/outline/ghost variants
+    - sm/md sizes)
+  - `components/ui/input.tsx`
+  - `components/ui/card.tsx` (Card + Header + Title + Content)
+  - `components/ui/table.tsx` (Table + Header + Body + Row + Head + Cell)
+- `lib/api-client.ts`: fetch wrapper + localStorage token mgmt + JSON
+  body + Bearer auth + ApiError shape.
+- `lib/auth.ts`: `useRequireAuth({ requireRole })` hook — `/auth/me`
+  ile token + role doğrulama; 401 / role mismatch → /login redirect.
+  `logout(router)` helper.
+- `app/login/page.tsx`: 2-step OTP form (phone → OTP code), Suspense
+  wrap (Next 15 useSearchParams bailout fix).
+- `app/(authenticated)/layout.tsx`: protected route grubu — admin role
+  guard + sidebar nav + user phone + logout button.
+- `app/(authenticated)/page.tsx`: dashboard — pending count card.
+- `app/(authenticated)/drivers/pending/page.tsx`: tablo + Onayla/Reddet
+  butonları + Idempotency-Key per request + prompt() red sebebi (MVP).
+- `apps/admin/.env.local.example`: `NEXT_PUBLIC_API_URL`.
+- Build: 4 static route, ✔ no errors.
+
+**Admin ESLint strict parity (G5)**
+
+- A3a'dan TODO kapandı. `apps/admin/.eslintrc.json` strict rules:
+  no-explicit-any, no-non-null-assertion, consistent-type-imports,
+  no-unused-vars, import/order (root config ile aynı groups +
+  alphabetize), no-console (warn/error allow).
+- Mevcut admin kodu auto-fix sonrası geçti.
+
+**Docs (G6)**
+
+- `docs/development-notes.md` "2026-04-25 — Session A3c" bölümü:
+  half-open interval, tstzrange revisit, CreateBucket idempotency,
+  seed admin guard, promote-admin CLI ESLint exclusion, cross-module
+  write CLI ekstrası, Next 15 useSearchParams Suspense, admin auth
+  localStorage MVP, minimal UI primitives, ESLint strict parity.
+- `docs/phase-1-closeout.md` (yeni): Faz 1 kapanış raporu — kapsam,
+  oturum tarihçesi, ne kuruldu, ADR listesi (16), test kapsamı (210+),
+  güvenlik mihenk taşları, bilinçli ertelemeler, A4 hazırlık.
+- `README.md`: Status section + Quick Start (db:up + db:seed + dev +
+  servisler) + admin promotion komutu.
+
+### Plandan sapmalar (gerekçeli)
+
+1. **shadcn CLI yerine elle UI primitives.** Brief `pnpm dlx shadcn@latest add`
+   öneriyordu. CLI Radix UI ekosistemini (15+ npm package) ekliyor —
+   A3c için (sadece button/input/card/table gerek) overkill. Manuel
+   pattern aynı şekilde extensible. Dialog/Select gerektiğinde shadcn
+   add tek seferde çalışır.
+2. **Reject reason `prompt()` (MVP).** Brief Dialog'lu UI önerdi ama
+   kabul ediyor: "MVP viable: prompt." Yaptım. A4'te shadcn dialog
+   eklenince upgrade.
+3. **Migration shadow DB ile değil manuel SQL.** Docker A3c session
+   süresince kapalıydı — `migrate diff --shadow-database-url` çağrısı
+   yapamadım. SQL'i şemaya bakarak elle yazdım (şema-DSL düşük katman
+   eşleştirme). Migration apply test ortamında otomatik çalışacak
+   (`prisma migrate deploy` setup-integration.ts'te).
+4. **GiST + tstzrange index skip.** Brief `tstzrange && tstzrange` SQL
+   önerdi (raw query). B-tree composite ile aynı sonuç + Prisma DSL ile
+   kalabildim — kod daha okunaklı. GiST gerek olunca migration eklenir
+   (revisit trigger dev-notes'ta).
+5. **MinIO bucket auto-ensure A3b'de YOK, A3c'de eklendi.** Brief'te
+   "öncelikle kontrol et" denmişti — `apps/api/src/common/storage/`
+   dizininde bootstrap servisi yoktu, ben ekledim.
+6. **ADR 0015 + CLI tek commit'te birleşti.** lint-staged staging
+   davranışı; iki ayrı commit yerine tek commit'te (CLI + ADR). Etki
+   yok, doc + impl atomik.
+7. **Manuel browser smoke skipped (Docker offline).** Brief manuel admin
+   panel browser testi istiyordu. Docker session sonunda hâlâ kapalıydı,
+   live test yapamadım. Tüm build/lint/typecheck yeşil; e2e Testcontainers
+   üzerinden CI'da koşacak. Kullanıcı manuel test'i `pnpm db:up && pnpm
+dev` ile yapacak.
+
+### Final commit listesi
+
+| #   | Hash        | Konu                                                                            |
+| --- | ----------- | ------------------------------------------------------------------------------- |
+| 1   | `ccc00c4`   | feat(api): auto-ensure storage bucket on dev bootstrap                          |
+| 2   | `fc353d0`   | feat(api): seed bootstrap admin user via env in non-prod                        |
+| 3   | `f228bc4`   | feat(api): add promote-admin cli with outbox audit (ADR 0015 included)          |
+| 4   | `5b231c3`   | feat(db): add vehicle_availabilities table with range index                     |
+| 5   | `d691147`   | feat(shared-types): add availability schemas                                    |
+| 6   | (squashed)  | feat(supply): add availability port, repository and domain errors               |
+| 7   | (squashed)  | feat(supply): implement availability use cases with half-open overlap           |
+| 8   | (squashed)  | feat(supply): add admin vehicle activate use case and endpoint                  |
+| 9   | (squashed)  | feat(supply): wire availability controller and admin activate endpoint          |
+| 10  | `378348b`   | test(supply): add full driver onboarding lifecycle e2e                          |
+| 11  | `ef98421`   | feat(admin): install clsx, tailwind-merge and cva for styling primitives        |
+| 12  | (squashed)  | feat(admin): add api client, auth hook and minimal ui primitives                |
+| 13  | (squashed)  | feat(admin): add login page and admin-only dashboard with driver approval queue |
+| 14  | `5d6a9c2`   | chore(admin): enable strict typescript-eslint rules                             |
+| 15  | (bu commit) | docs: add phase 1 closeout, log a3c progress, update readme + dev-notes         |
+
+### Pending (A4 — Faz 2 başlangıç)
+
+- **Booking** modülü (Quote + pricing + state machine + BookingFlow XState)
+- **Pricing** (PricingRule + PricingStrategy + seasonal multipliers)
+- **Dispatch** (driver matching + offer broadcasting)
+- **Payment** iyzico marketplace (provizyon + capture + payout + webhook)
+- **Notifications** multi-channel + SMS real (Netgsm + İleti Merkezi failover)
+- **Mobile apps** (React Native + Expo, customer + driver ayrı)
+- **Sentry + OpenTelemetry** prod observability
+- **Coolify + Hetzner** prod deploy
+- **TCKN/IBAN secret rotation** runbook
+- **Document virus scan + EXIF + thumbnail** post-upload pipeline
+- **HTTP-only cookie auth** admin (localStorage MVP'den geçiş)
+- **Branch protection rule** (Team plan değerlendirmesi)
+- **Admin panel UI tamamı** (catalog editor, KPIs, document review,
+  notification center, vs)
+
+### Next
+
+Faz 1 kapandı. Faz 2 başlangıcı için kullanıcı brief versin. Branch
+adı önerisi: `feat/booking-quote-foundation`.
+
+---
+
 <!--
 Şablon (yeni oturum buradan başlasın):
 

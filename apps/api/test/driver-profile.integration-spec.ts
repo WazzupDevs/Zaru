@@ -56,14 +56,27 @@ describe("Supply driver-profile e2e", () => {
 
   beforeEach(async () => {
     MockSmsSender._testOnlyReset();
-    // FK-aware cleanup: documents → vehicles → driver_profiles → refresh → otp → users.
+    // FK-aware cleanup. Order:
+    //   availabilities → documents → vehicles → driver_profiles → refresh → otp → users.
+    // VehicleAvailability landed in A3c; if a sibling lifecycle test left a
+    // row behind, `vehicle.deleteMany()` trips its FK and every test in this
+    // suite fails with the cross-suite contamination error. Wipe it first.
     await prisma.client.outboxEvent.deleteMany({
       where: {
         aggregateType: {
-          in: ["DriverProfile", "Vehicle", "Document", "User", "RefreshToken", "OtpRequest"],
+          in: [
+            "DriverProfile",
+            "Vehicle",
+            "VehicleAvailability",
+            "Document",
+            "User",
+            "RefreshToken",
+            "OtpRequest",
+          ],
         },
       },
     });
+    await prisma.client.vehicleAvailability.deleteMany({});
     await prisma.client.document.deleteMany({});
     await prisma.client.vehicle.deleteMany({});
     await prisma.client.driverProfile.deleteMany({});
