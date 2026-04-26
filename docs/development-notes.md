@@ -673,3 +673,102 @@ Root `eslint.config.mjs` flat config admin'i hâlâ ignore ediyor — admin
 kendi `.eslintrc.json` (legacy format, `next lint` zorunlu) ile strict
 seviyede çalışıyor. Next 16'da `next lint` deprecated; o zaman flat'a
 geçiş + root config'e admin scope.
+
+---
+
+## 2026-04-25 — Integration test green hotfix
+
+### Problem
+
+A3c merge sonrası 3 integration kırmızı (lint/typecheck/build/unit yeşil):
+
+1. `storage.integration-spec.ts` — `StorageBootstrapService` `InjectPinoLogger`
+   ile `PinoLogger`'ı inject ediyor; test module'ü `LoggerModule.forRoot()`
+   import etmediği için DI fail. 5 test skip.
+2. `auth.controller.e2e-spec.ts` — A2c-followup'ta eklenen Redis sliding
+   window rate limiter idempotency testlerinde 429 dönüyor. Suite içinde
+   hardcoded `+90555` phone'lar + supertest default IP (`::1`) → per-IP
+   minute limit 3 saniye içinde dolu, 4. test 429 alıyor.
+3. `driver-onboarding-lifecycle.e2e-spec.ts` — Testcontainers temiz DB,
+   `wedding-car` kategorisi yok, `findActiveVehicleType` null dönüyor.
+
+Production akışında üçü de doğru davranış — test setup eksiklikleri.
+
+### Çözümler
+
+**1. Storage bootstrap test'te override (no-op).** `setup-integration.ts`
+zaten MinIO container'ında bucket'ı `S3Client + CreateBucketCommand` ile
+yaratıyor; test'te ayrıca bootstrap çalıştırmak gereksiz. `LoggerModule`
+import etmek yerine provider override:
+
+```ts
+.overrideProvider(StorageBootstrapService)
+.useValue({ onApplicationBootstrap: async () => { /* no-op */ } })
+```
+
+`overrideProvider().useValue()` NestJS DI'a "constructor çağırma" der —
+PinoLogger DI hiç tetiklenmez. LoggerModule import etmek "sadece DI gerek"
+diye fazla geniş.
+
+**2. `uniquePhone()` test util + Redis `rl:otp:*` cleanup beforeEach'te.**
+Tek katman yetmedi: phone unique olsa bile suite içindeki 4. OTP request'i
+default IP'den geliyor, per-IP-minute (3) 429 üretiyor. İki katman:
+
+- `uniquePhone()` — `+905XXXXXXXXX` random, per-phone bucket çakışmasın
+- `redis.client.del('rl:otp:*')` beforeEach'te — per-IP bucket suite
+  arası reset
+
+Production rate limiter dokunulmadı; test kendi izolasyonunu sağlıyor.
+`returning-user.integration-spec.ts`'deki precedent'i taşıdık.
+
+**3. `setupCatalogFixtures(prisma)` helper.** Lifecycle test'in ihtiyacı
+olan minimum data (1 ServiceCategory + 1 VehicleType + 3 VEHICLE-scope
+attribute def `trim_color` / `has_air_conditioning` / `has_chauffeur`).
+Tam seed admin user + 5 attribute def yaratıyor — test için overkill.
+Helper idempotent (upsert by slug); diğer test'ler de re-use edebilir.
+
+### Side fix: driver-profile.integration-spec.ts FK
+
+A3b'nin `driver-profile.integration-spec.ts` beforeEach'inde availability
+cleanup yoktu. Lifecycle test bir VehicleAvailability bırakırsa, bir
+sonraki suite çalıştığında `vehicle.deleteMany()` FK violate ediyordu
+(`vehicle_availabilities_vehicle_id_fkey`). Cleanup order'ına
+`vehicleAvailability.deleteMany({})` eklendi — A3c migration etkisi.
+
+Genel kural: **yeni FK eklediğin migration sonrası, mevcut test
+beforeEach cleanup'larını gözden geçir.** Cross-suite contamination en
+kolay buradan çıkar.
+
+### CI gap kapatıldı: Prod build smoke job
+
+`.github/workflows/ci.yml`'a `prod-build-smoke` job. Postgres + Redis +
+MinIO services, `pnpm build` + `node apps/api/dist/main.js` + `/healthz`
+30 saniye polling. Yakalayacağı:
+
+- CJS/ESM regression (dual-format gibi)
+- Zod env validation hataları (yeni env eklenince schema güncellenmemişse)
+- NestJS DI resolution hataları (storage bootstrap gibi prod yolda)
+- Boot süresi patlamaları (Faz 2'de payment, booking eklendikçe)
+
+### Lessons learned
+
+1. **Lokal smoke yapılmadan merge etmek 3 sessiz hata bıraktı.** Solo
+   geliştiricinin "branch protection yok" disiplini eksiği — gelecek
+   PR'larda lokal `pnpm test:integration` checklist zorunlu (PR template
+   güncelle A4 başında).
+2. **Vitest ESM ≠ nest start CJS.** Test path runtime hatalarını
+   yakalamıyor; prod build smoke job bu kapıyı kapattı.
+3. **Rate limiter doğru çalışıyor (429 dönüyor!)** ama test'ler bunu
+   bilmiyordu. Production behavior değişmedi, test'ler katılaştı.
+4. **Yeni FK = beforeEach cleanup audit zorunlu.** Cross-suite
+   contamination her zaman yeni schema göçüne tepkisi geç olan eski test'ten.
+
+### Helper konumu konvansiyonu
+
+`apps/api/test/helpers/` altına paylaşılan test util'ları:
+
+- `phone-factory.ts` — `uniquePhone()`
+- `catalog-fixtures.ts` — `setupCatalogFixtures()`
+
+Yeni helper eklenince buraya. Module-spesifik fixture'lar (`booking/`,
+`payment/`) A4'te eklenecek alt klasörlerde.
