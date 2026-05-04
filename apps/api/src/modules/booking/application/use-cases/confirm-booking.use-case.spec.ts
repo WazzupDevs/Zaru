@@ -70,6 +70,7 @@ function buildHarness() {
   const quoteRepo: PriceQuoteRepositoryPort = {
     create: vi.fn(),
     findById: vi.fn(async (_tx, id) => (id === storedQuote.id ? storedQuote : null)),
+    expireOlderThan: vi.fn(async () => []),
     consumeQuote: vi.fn(async (_tx, id, bookingId, now) => {
       if (id !== storedQuote.id) throw new QuoteNotFoundError();
       if (storedQuote.status === "CONSUMED") throw new QuoteAlreadyConsumedError();
