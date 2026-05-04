@@ -114,6 +114,9 @@ class FakeQuoteRepo implements PriceQuoteRepositoryPort {
   async consumeQuote(): Promise<PriceQuoteEntity> {
     throw new Error("not in scope");
   }
+  async expireOlderThan(): Promise<PriceQuoteEntity[]> {
+    return [];
+  }
 }
 
 interface CapturedOutbox {
