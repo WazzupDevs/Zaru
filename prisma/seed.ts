@@ -188,6 +188,160 @@ async function seedBootstrapAdmin(): Promise<void> {
   console.log(`✓ Admin user bootstrapped: ${phone}`);
 }
 
+/**
+ * Pricing data for wedding-car: one PricingProfile per vehicle type +
+ * seasonal/weekend multipliers + 2 wedding addons. Idempotent — uses fixed
+ * UUIDs for the rules so re-runs are no-ops.
+ *
+ * Schema: ADR 0017 (pricing). Money columns are Decimal(10, 2).
+ */
+async function seedWeddingCarPricing(): Promise<void> {
+  const category = await prisma.serviceCategory.findUnique({
+    where: { slug: "wedding-car" },
+  });
+  if (!category) {
+    // eslint-disable-next-line no-console
+    console.log("ℹ️  wedding-car category not found, skipping pricing seed.");
+    return;
+  }
+
+  const profiles = [
+    {
+      slug: "classic-sedan",
+      baseFee: "3000.00",
+      perKmFee: "15.00",
+      perHourFee: "200.00",
+      minimumHours: 4,
+      includedKm: 50,
+    },
+    {
+      slug: "vip-sedan",
+      baseFee: "6000.00",
+      perKmFee: "25.00",
+      perHourFee: "400.00",
+      minimumHours: 4,
+      includedKm: 50,
+    },
+    {
+      slug: "classic-car",
+      baseFee: "8000.00",
+      perKmFee: "30.00",
+      perHourFee: "500.00",
+      minimumHours: 5,
+      includedKm: 30,
+    },
+    {
+      slug: "minibus",
+      baseFee: "4000.00",
+      perKmFee: "20.00",
+      perHourFee: "250.00",
+      minimumHours: 3,
+      includedKm: 50,
+    },
+  ];
+  for (const p of profiles) {
+    const vt = await prisma.vehicleType.findUnique({
+      where: { categoryId_slug: { categoryId: category.id, slug: p.slug } },
+    });
+    if (!vt) continue;
+    await prisma.pricingProfile.upsert({
+      where: { vehicleTypeId: vt.id },
+      update: {
+        baseFee: p.baseFee,
+        perKmFee: p.perKmFee,
+        perHourFee: p.perHourFee,
+        minimumHours: p.minimumHours,
+        includedKm: p.includedKm,
+        isActive: true,
+      },
+      create: {
+        vehicleTypeId: vt.id,
+        baseFee: p.baseFee,
+        perKmFee: p.perKmFee,
+        perHourFee: p.perHourFee,
+        minimumHours: p.minimumHours,
+        includedKm: p.includedKm,
+      },
+    });
+  }
+
+  // Fixed UUIDv4-shaped ids so re-running the seed is a true no-op (Prisma
+  // upsert by primary key).
+  const RULES = [
+    {
+      id: "11111111-1111-4111-8111-111111111111",
+      type: "SEASONAL_MULTIPLIER" as const,
+      categoryId: null,
+      vehicleTypeId: null,
+      name: "Yaz Sezonu",
+      description: "Mayıs–Eylül düğün sezonu zamı (%30)",
+      validFrom: new Date("2026-05-01"),
+      validTo: new Date("2026-09-30"),
+      daysOfWeek: null,
+      multiplier: "1.30",
+      fixedAmount: null,
+      isOptional: false,
+      sortOrder: 10,
+    },
+    {
+      id: "22222222-2222-4222-8222-222222222222",
+      type: "DAY_OF_WEEK_MULTIPLIER" as const,
+      categoryId: null,
+      vehicleTypeId: null,
+      name: "Hafta Sonu",
+      description: "Cumartesi + Pazar zammı (%15). Bitmask: 32 (Cmt) | 64 (Paz) = 96.",
+      validFrom: null,
+      validTo: null,
+      daysOfWeek: 96,
+      multiplier: "1.15",
+      fixedAmount: null,
+      isOptional: false,
+      sortOrder: 20,
+    },
+    {
+      id: "33333333-3333-4333-8333-333333333333",
+      type: "ADDON" as const,
+      categoryId: category.id,
+      vehicleTypeId: null,
+      name: "Düğün Süslemesi",
+      description: "Çelenk, gelin tülü ve dış süsleme",
+      validFrom: null,
+      validTo: null,
+      daysOfWeek: null,
+      multiplier: null,
+      fixedAmount: "500.00",
+      isOptional: true,
+      sortOrder: 30,
+    },
+    {
+      id: "44444444-4444-4444-8444-444444444444",
+      type: "ADDON" as const,
+      categoryId: category.id,
+      vehicleTypeId: null,
+      name: "Üniformalı Şoför",
+      description: "Özel kıyafetli, eğitimli düğün şoförü",
+      validFrom: null,
+      validTo: null,
+      daysOfWeek: null,
+      multiplier: null,
+      fixedAmount: "800.00",
+      isOptional: true,
+      sortOrder: 40,
+    },
+  ];
+  for (const r of RULES) {
+    await prisma.pricingRule.upsert({
+      where: { id: r.id },
+      update: { isActive: true },
+      create: r,
+    });
+  }
+  // eslint-disable-next-line no-console
+  console.log(
+    `✓ Pricing seeded: ${String(profiles.length)} profiles + ${String(RULES.length)} rules.`,
+  );
+}
+
 async function main(): Promise<void> {
   // eslint-disable-next-line no-console
   console.log("Seeding wedding-car category...");
@@ -195,6 +349,9 @@ async function main(): Promise<void> {
   // eslint-disable-next-line no-console
   console.log("Seeding bootstrap admin...");
   await seedBootstrapAdmin();
+  // eslint-disable-next-line no-console
+  console.log("Seeding wedding-car pricing...");
+  await seedWeddingCarPricing();
   // eslint-disable-next-line no-console
   console.log("Seed complete.");
 }
