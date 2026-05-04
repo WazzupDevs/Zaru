@@ -15,6 +15,7 @@ import {
   type OtpRequestRepositoryPort,
 } from "../ports/otp-request.repository.port";
 import { SMS_SENDER_PORT, type SmsSenderPort } from "../ports/sms-sender.port";
+import { TEST_OTP_CACHE_PORT, type TestOtpCachePort } from "../ports/test-otp-cache.port";
 
 const OTP_TTL_MS = 5 * 60_000;
 
@@ -48,6 +49,8 @@ export class RequestOtpUseCase {
     private readonly clock: ClockPort,
     @Inject(RATE_LIMITER_PORT)
     private readonly rateLimiter: RateLimiterPort,
+    @Inject(TEST_OTP_CACHE_PORT)
+    private readonly testOtpCache: TestOtpCachePort,
   ) {}
 
   async execute(input: RequestOtpInput): Promise<RequestOtpResult> {
@@ -74,6 +77,9 @@ export class RequestOtpUseCase {
       to: phone.value,
       body: `Event Fleet doğrulama kodunuz: ${code}. 5 dakika geçerlidir.`,
     });
+
+    // Dev/test only — adapter is NoopTestOtpCache in production.
+    this.testOtpCache.record(phone.value, code);
 
     return { requestId: record.id, expiresAt: record.expiresAt };
   }
