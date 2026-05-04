@@ -12,6 +12,8 @@ import { BOOKING_EXPIRY_QUEUE_NAME } from "./infrastructure/workers/booking-expi
 import { BookingExpiryScheduler } from "./infrastructure/workers/booking-expiry.scheduler";
 import { BookingExpiryService } from "./infrastructure/workers/booking-expiry.service";
 import { BookingExpiryWorker } from "./infrastructure/workers/booking-expiry.worker";
+import { AdminBookingController } from "./interface/controllers/admin-booking.controller";
+import { BookingController } from "./interface/controllers/booking.controller";
 
 /**
  * Booking module — A4b. Owns the Booking aggregate, the state machine,
@@ -20,6 +22,7 @@ import { BookingExpiryWorker } from "./infrastructure/workers/booking-expiry.wor
  */
 @Module({
   imports: [PricingModule, BullModule.registerQueue({ name: BOOKING_EXPIRY_QUEUE_NAME })],
+  controllers: [BookingController, AdminBookingController],
   providers: [
     { provide: BOOKING_REPOSITORY_PORT, useClass: PrismaBookingRepository },
     ConfirmBookingUseCase,
