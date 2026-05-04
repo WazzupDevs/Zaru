@@ -8,10 +8,15 @@ import {
 } from "../../../../common/persistence/outbox-writer.port";
 import { TX_RUNNER_PORT, type TxRunnerPort } from "../../../../common/persistence/tx-runner.port";
 import {
+  RATE_LIMITER_PORT,
+  type RateLimiterPort,
+} from "../../../../common/rate-limit/rate-limiter.port";
+import {
   InvalidAddonSelectionError,
   InvalidTimeRangeError,
   PricingProfileNotFoundError,
 } from "../../domain/errors/pricing-errors";
+import { PricingRateLimitedError } from "../../domain/errors/pricing-rate-limited.error";
 import { PricingCalculator } from "../../domain/services/pricing-calculator.service";
 import { RuleEvaluator } from "../../domain/services/rule-evaluator.service";
 import { CoordinatesVO } from "../../domain/value-objects/coordinates.vo";
@@ -70,6 +75,7 @@ export class RequestPriceQuoteUseCase {
     @Inject(TX_RUNNER_PORT) private readonly tx: TxRunnerPort,
     @Inject(OUTBOX_WRITER_PORT) private readonly outbox: OutboxWriterPort,
     @Inject(CLOCK_PORT) private readonly clock: ClockPort,
+    @Inject(RATE_LIMITER_PORT) private readonly rateLimiter: RateLimiterPort,
     private readonly calculator: PricingCalculator,
     private readonly evaluator: RuleEvaluator,
     config: ConfigService<Env, true>,
@@ -82,6 +88,17 @@ export class RequestPriceQuoteUseCase {
     actor: { userId: string },
   ): Promise<PriceQuoteEntity> {
     const now = this.clock.now();
+
+    // 10/min/user — covers form double-tap + low-rate scraping. Idempotency-Key
+    // is honored at the controller layer, so a legit retry doesn't burn quota.
+    const limited = await this.rateLimiter.check({
+      key: `rl:pricing:quote:user:${actor.userId}`,
+      limit: 10,
+      windowSeconds: 60,
+    });
+    if (!limited.allowed) {
+      throw new PricingRateLimitedError(limited.retryAfterSeconds ?? 60);
+    }
 
     const pickup = CoordinatesVO.create(input.pickupLat, input.pickupLng);
     const dropoff = CoordinatesVO.create(input.dropoffLat, input.dropoffLng);

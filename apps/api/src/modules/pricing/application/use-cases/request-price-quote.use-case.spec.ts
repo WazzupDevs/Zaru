@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { RequestPriceQuoteUseCase } from "./request-price-quote.use-case";
 import { FrozenClock } from "../../../../../test/fakes/frozen-clock";
+import { InMemoryRateLimiter } from "../../../../../test/fakes/in-memory-rate-limiter";
 import {
   InvalidAddonSelectionError,
   InvalidTimeRangeError,
@@ -156,6 +157,7 @@ function buildUseCase(): {
     new FakeTxRunner(),
     buildOutbox(outbox),
     new FrozenClock(NOW),
+    new InMemoryRateLimiter(() => NOW.getTime()),
     new PricingCalculator(),
     new RuleEvaluator(),
     config,
