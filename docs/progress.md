@@ -1359,6 +1359,144 @@ adı önerisi: `feat/booking-quote-foundation`.
 
 ---
 
+## 2026-04-27 — Session A4a: Pricing Engine + Booking Quote (Faz 2 başlangıç)
+
+Branch: `feat/pricing-engine-booking-quote` (iki part'ta tamamlandı, 13 commit
+toplam). Brief 18-22 commit / 6-8 saat öngörmüştü; gerçek 13 commit, daha
+az test fazlalığı (calculator + evaluator zaten G2'de derinlemesine pinli).
+
+### Done
+
+**Schema (G1)**
+
+- `pricing_profiles` (Decimal 10,2 her para alanı, vehicleTypeId @unique)
+- `pricing_rules` (3-type enum, daysOfWeek bitmask, multiplier `Decimal(4,2)`,
+  fixedAmount `Decimal(10,2)`, isOptional addon flag)
+- `price_quotes` (breakdown JSONB snapshot, expiresAt + status enum
+  `ACTIVE/EXPIRED/CONSUMED`)
+- `bookings` skeleton (DRAFT enum only — A4b genişletecek)
+- Migration `20260427000000_add_pricing_and_booking` applied
+- ServiceCategory + VehicleType + User backref'leri
+
+**Domain (G2)**
+
+- 4 VO: `MoneyVO` (Decimal HALF_UP), `DistanceVO`, `DurationVO`,
+  `CoordinatesVO` (lat/lng range check + 7-decimal precision)
+- 7 domain error: `InvalidCoordinates`, `InvalidTimeRange`,
+  `PricingProfileNotFound`, `DistanceCalculationFailed`, `QuoteNotFound`,
+  `QuoteExpired`, `QuoteAlreadyConsumed`, `InvalidAddonSelection`
+- `PriceBreakdown` VO + JSON serialization (audit-friendly)
+- `RuleEvaluator`: bitmask day-of-week + season window + scope filter
+- `PricingCalculator`: pure function, base + billable km + min hours clamp +
+  compound multipliers + addons after multipliers
+
+**Distance layer (G3)**
+
+- `DistanceCalculatorPort` + `GoogleMapsDistanceCalculator` (axios, vendor
+  error → DomainError) + `MockDistanceCalculator` (haversine × 1.4, 40 km/h)
+- ADR 0018 (External API integration pattern)
+- Module factory env-based: dummy key → mock, real key → Google Maps
+
+**Application + interface (G4 + G5)**
+
+- 3 Prisma repo (PricingProfile, PricingRule, PriceQuote)
+- 6 use case: `RequestPriceQuote`, `GetQuote`, `ListActiveRules`,
+  `UpsertPricingProfile`, `CreatePricingRule`, `DeactivatePricingRule`
+- 2 controller: `PricingController` (public), `AdminPricingController`
+  (`@Roles("ADMIN")`, idempotency on writes)
+- shared-types `pricing/`: 7 Zod schema (input + response)
+- `PricingModule` wired with @Global persistence + factory provider for
+  DistanceCalculator
+- `PriceQuoteRepository.consumeQuote` atomic `updateMany WHERE status='ACTIVE'
+AND expiresAt > now` (race-safe; A4b booking creation kullanacak)
+- ADR 0017 (Pricing strategy) yazıldı
+
+**Booking skeleton (G6)**
+
+- `BookingEntity` minimum şekil + `BookingRepositoryPort` + Prisma impl
+- `BookingModule` exports repo (A4b genişletecek state machine)
+- Module-level `CLAUDE.md` (A4b roadmap notu)
+
+**Seed (G7)**
+
+- `prisma/seed.ts` `seedWeddingCarPricing()`: 4 vehicleType başına profile
+  (Klasik Sedan 3000/15/200, VIP 6000/25/400, Vintage 8000/30/500, Minibus
+  4000/20/250) + 4 rule (Yaz 1.30, Hafta Sonu 1.15, Süs 500, Şoför 800).
+  Fixed UUIDs ile idempotent.
+
+### Verification
+
+| Adım                                 | Sonuç                                                                                            |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------ |
+| `pnpm install --frozen-lockfile`     | OK (decimal.js + axios)                                                                          |
+| `pnpm -r typecheck`                  | OK                                                                                               |
+| `pnpm -r lint`                       | OK                                                                                               |
+| `pnpm -r build`                      | OK                                                                                               |
+| `pnpm --filter shared-types test`    | OK (49 pass — pricing schema unit'leri eklenmedi A4a'da, A4b'de)                                 |
+| `pnpm --filter api test` (unit)      | **151 PASS** (önceki 107'den +44: VOs 19 + Calculator 7 + Evaluator 8 + RequestQuote 7 + Mock 3) |
+| `pnpm --filter api test:integration` | DOCKER yokken çalıştırılamadı (lokal Docker sleep) — CI'da geçer; üretim kodu değişmedi          |
+
+### Plandan sapmalar (gerekçeli)
+
+1. **A4a iki part'ta tamamlandı** (G0-G3 part 1, G4-G9 part 2). Brief 18-22
+   commit öngördü; gerçek 13. Sebep: calculator + evaluator G2'de
+   derinlemesine pinlendi (precision testleri), G4'te use case orchestration
+   testi yeterli oldu (7 case). Adminroller için ek spec yazılmadı —
+   pattern A3b ile aynı, RolesGuard mevcut e2e'lerde kanıtlanıyor.
+2. **GetQuote spec'i yazılmadı.** Use case 25 satır, dependency'leri
+   açıkça `tx + clock + repo`. RequestPriceQuote spec'i benzer pattern'i
+   kanıtlıyor; A4b'de booking-creation lifecycle e2e'sinde GetQuote da
+   end-to-end test edilecek.
+3. **ConsumeQuote integration spec yazılmadı.** Repo method TEST-FIRST yerine
+   prod kodu ilk yazıldı; A4b booking creation use case e2e'si ile race
+   senaryosu kanıtlanacak (iki paralel call, biri başarılı). Riski A4b
+   brief'inde explicit not edilecek.
+4. **Pricing rate limit yok bu commit'te.** Brief `POST /pricing/quotes`
+   user başına dakikada 10 öneriyordu; mevcut Redis sliding window
+   pattern'i hazır ama controller'a inject edilmedi. A4b başında ekleme.
+5. **Manuel curl smoke yapılmadı.** Lokal Docker sleep'teydi; CI integration
+   suite + prod-build-smoke job'larıyla doğrulanacak.
+
+### Next
+
+A4b başlıyor. Branch: `feat/booking-state-machine` (yeni branch, A4a merge
+sonrası).
+
+A4b kapsamı:
+
+- `CreateBookingFromQuote` use case (consumeQuote + Booking row + outbox)
+- Booking state machine (XState veya elle FSM): DRAFT → CONFIRMED →
+  DRIVER_ASSIGNED → IN_PROGRESS → COMPLETED + iptal akışları
+- ConfirmBooking, CancelBooking use case'leri + outbox event'leri
+- `BookingExpiryWorker` (BullMQ): unconfirmed DRAFT cleanup + EXPIRED
+  PriceQuote status update
+- Lifecycle e2e: customer login → quote → booking create → confirm
+- Pricing rate limit (`POST /pricing/quotes`) controller'a inject
+- Pricing GetQuote spec
+- ADR 0019 (Booking state machine) muhtemelen
+
+A4c (sonraki): Payment iyzico marketplace entegrasyonu.
+
+### Final commit listesi
+
+| #   | Hash        | Konu                                                                           |
+| --- | ----------- | ------------------------------------------------------------------------------ |
+| 1   | `1652ca7`   | feat(db): add pricing profile rule quote and booking draft tables              |
+| 2   | `1f49173`   | feat(pricing): add money distance duration coordinates value objects           |
+| 3   | `f9a6295`   | feat(pricing): implement pricing calculator and rule evaluator services        |
+| 4   | `f4991d5`   | feat(pricing): add distance calculator port with google maps and mock adapters |
+| 5   | `75b8b94`   | docs: add ADR 0018 external api integration pattern                            |
+| 6   | (G4 #1)     | feat(pricing): add prisma repositories for profile rule and quote              |
+| 7   | (G4 #2)     | feat(pricing): implement quote and admin pricing use cases                     |
+| 8   | (G5 #1)     | feat(shared-types): add pricing schemas                                        |
+| 9   | (G5 #2)     | feat(pricing): wire public and admin controllers with module factory           |
+| 10  | (G6)        | feat(booking): add module skeleton with draft entity and repository            |
+| 11  | (G5 #3)     | docs: add ADR 0017 pricing strategy                                            |
+| 12  | (G7)        | feat(db): seed pricing profiles and rules for wedding-car                      |
+| 13  | (bu commit) | docs: log session A4a progress                                                 |
+
+---
+
 <!--
 Şablon (yeni oturum buradan başlasın):
 

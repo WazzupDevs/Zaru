@@ -21,8 +21,10 @@ import { RequestContextModule } from "./common/request-context/request-context.m
 import { SecurityModule } from "./common/security/security.module";
 import { StorageModule } from "./common/storage/storage.module";
 import { type Env, validateEnv } from "./config/env";
+import { BookingModule } from "./modules/booking/booking.module";
 import { CatalogModule } from "./modules/catalog/catalog.module";
 import { IdentityModule } from "./modules/identity/identity.module";
+import { PricingModule } from "./modules/pricing/pricing.module";
 import { SupplyModule } from "./modules/supply/supply.module";
 
 @Module({
@@ -52,6 +54,8 @@ import { SupplyModule } from "./modules/supply/supply.module";
     IdentityModule,
     CatalogModule,
     SupplyModule,
+    PricingModule,
+    BookingModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: DomainExceptionFilter },

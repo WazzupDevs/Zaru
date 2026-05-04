@@ -48,6 +48,15 @@ export const envSchema = z.object({
     .string()
     .regex(/^\+90(5)\d{9}$/, "BOOTSTRAP_ADMIN_PHONE must be a TR mobile in E.164 format")
     .optional(),
+
+  // --- Pricing / Distance (A4a) ---
+  // Google Maps Distance Matrix API key. Dummy values starting with
+  // `AIzaSy_DUMMY` switch the module to MockDistanceCalculator (haversine)
+  // for local dev and CI. ADR 0018.
+  GOOGLE_MAPS_API_KEY: z.string().min(20).default("AIzaSy_DUMMY_REPLACE_WITH_REAL_KEY"),
+  GOOGLE_MAPS_RATE_LIMIT_PER_SECOND: z.coerce.number().int().positive().default(10),
+  // Quote TTL (15 minutes by default). ADR 0017.
+  PRICE_QUOTE_TTL_SECONDS: z.coerce.number().int().positive().default(900),
 });
 
 export type Env = z.infer<typeof envSchema>;

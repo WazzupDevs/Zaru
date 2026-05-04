@@ -772,3 +772,77 @@ MinIO services, `pnpm build` + `node apps/api/dist/main.js` + `/healthz`
 
 Yeni helper eklenince buraya. Module-spesifik fixture'lar (`booking/`,
 `payment/`) A4'te eklenecek alt klasörlerde.
+
+---
+
+## 2026-04-27 — Session A4a (Pricing engine + booking quote)
+
+### Decimal her yerde para
+
+`Decimal.js` + Prisma `@db.Decimal(10, 2)` para kolonlarında zorunlu. JS
+`number` para hesabında YASAK (`0.1 + 0.2 === 0.30000000000000004`). MoneyVO
+`multiply()` her zaman `Decimal.ROUND_HALF_UP` ile 2 ondalığa yuvarlar —
+`5500 × 1.30 = 7150.00`, `5500.50 × 1.30 = 7150.65` deterministik. Test
+pinleri ADR 0017 sözleşmesi.
+
+### External API call transaction'dan ÖNCE (ADR 0010 disiplin)
+
+`RequestPriceQuoteUseCase` Google Maps Distance Matrix çağrısını `txRunner.run`'ın
+DIŞINDA yapar. 5 saniyelik HTTP timeout DB lock'ları tutmasın diye. Aynı
+disiplin A3b'de Storage presigned URL üretiminde de vardı; pattern artık
+"new external integration → tx-dışı" refleksi.
+
+### DistanceCalculator factory: dummy key sentinel (ADR 0018)
+
+`pricing.module.ts` `useFactory`: `GOOGLE_MAPS_API_KEY.startsWith("AIzaSy_DUMMY")`
+true ise `MockDistanceCalculator` (haversine × 1.4, 40 km/h), aksi halde
+`GoogleMapsDistanceCalculator`. `.env.example` dummy ile gelir → yeni geliştirici
+sıfır key'le boot eder. Test setup (`setup-integration.ts`) dummy değer set
+eder; integration suite hiç gerçek API'ya dokunmaz.
+
+### `getLoggerToken` (nestjs-pino) factory provider'da
+
+`PinoLogger`'ı factory içinde inject etmek için `inject:` array'inde
+`getLoggerToken(ClassName)` kullanılır. `LoggerModule.forFeature` veya
+`LoggerModule.forRoot` re-import gereksiz — global LoggerModule yeterli,
+sadece sınıfa özel logger token'ını çözmek için bu helper.
+
+### Quote consume: atomic updateMany (race-safe)
+
+`PrismaPriceQuoteRepository.consumeQuote`: `updateMany WHERE status='ACTIVE'
+AND expiresAt > now`. Prisma `update` yerine `updateMany` çünkü iki
+eşzamanlı booking aynı quote'u consume etmeye çalışırsa biri 1, diğeri 0
+satır günceller. `count === 0` durumunda mevcut row'a göre doğru error
+seçilir (`QuoteAlreadyConsumedError` / `QuoteExpiredError` / `QuoteNotFoundError`).
+A4b booking creation use case bunu içinden çağıracak.
+
+### Outbox payload PII benzeri konum bilgisini taşımaz
+
+`pricing.PriceQuoteCreated` payload: `quoteId`, `vehicleTypeId`, `categoryId`,
+`totalAmount`, `currency`, `expiresAt`. **Yok:** lat/lng, address. Lokasyon
+müşteri bilgisi → privacy-by-design. Subscriber raporlama vs. için ihtiyaç
+duyarsa quote tablosundan audit-log'lu okuma yapsın. Test bu disiplini
+`expect(payloadJson).not.toContain("Sultanahmet")` ile pinler.
+
+### Rule snapshot: immutable price guarantee
+
+`PriceQuote.breakdown` JSONB hesaplama anındaki rule isim + multiplier +
+addon listesini taşır. Admin sonradan rule'u değiştirse / silse bile quote
+sabit. Booking confirm'de re-calculate yok, doğrudan quote'tan total
+alınır. ADR 0017 § "Rule snapshot".
+
+### tsx + tsconfig include
+
+`prisma/seed.ts` (`tsx` ile çalışıyor) `seedWeddingCarPricing()` fonksiyonu
+yeni eklendi. Hâlâ aynı root flat ESLint ignore'da (`prisma/**`); fonksiyon
+sayısı artarken seed dosyası bölünmek zorunda kalırsa A4b'de `prisma/seed/`
+alt klasör + per-domain dosya pattern'i düşünülecek.
+
+### A4b'de yapılacak (bağlı altyapı zaten hazır)
+
+- `CreateBookingFromQuote` use case: `consumeQuote` + Booking row
+- Booking state machine (XState veya elle finite-state map)
+- Booking confirm/cancel use case'leri + outbox event'leri
+- `BookingExpiryWorker` (BullMQ): unconfirmed DRAFT bookings + EXPIRED
+  PriceQuote temizliği
+- Customer mobile akışı (Faz 2 paralel)

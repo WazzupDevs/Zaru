@@ -43,6 +43,7 @@ model User {
 
   refreshTokens RefreshToken[]
   driverProfile DriverProfile?
+  bookings      Booking[]
 
   @@index([phoneE164])
   @@map("users")
@@ -152,26 +153,31 @@ model ServiceCategory {
   deletedAt     DateTime?                     @map("deleted_at")
   vehicleTypes  VehicleType[]
   attributeDefs CategoryAttributeDefinition[]
+  pricingRules  PricingRule[]
+  priceQuotes   PriceQuote[]
 
   @@index([isActive, sortOrder])
   @@map("service_categories")
 }
 
 model VehicleType {
-  id          String          @id @default(dbgenerated("uuidv7()")) @db.Uuid
-  categoryId  String          @map("category_id") @db.Uuid
-  slug        String // "classic-sedan"
-  name        String // "Klasik Sedan"
-  description String?
-  capacityMin Int             @default(1) @map("capacity_min")
-  capacityMax Int             @map("capacity_max")
-  isActive    Boolean         @default(true) @map("is_active")
-  sortOrder   Int             @default(0) @map("sort_order")
-  createdAt   DateTime        @default(now()) @map("created_at")
-  updatedAt   DateTime        @updatedAt @map("updated_at")
-  deletedAt   DateTime?       @map("deleted_at")
-  category    ServiceCategory @relation(fields: [categoryId], references: [id])
-  vehicles    Vehicle[]
+  id             String          @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  categoryId     String          @map("category_id") @db.Uuid
+  slug           String // "classic-sedan"
+  name           String // "Klasik Sedan"
+  description    String?
+  capacityMin    Int             @default(1) @map("capacity_min")
+  capacityMax    Int             @map("capacity_max")
+  isActive       Boolean         @default(true) @map("is_active")
+  sortOrder      Int             @default(0) @map("sort_order")
+  createdAt      DateTime        @default(now()) @map("created_at")
+  updatedAt      DateTime        @updatedAt @map("updated_at")
+  deletedAt      DateTime?       @map("deleted_at")
+  category       ServiceCategory @relation(fields: [categoryId], references: [id])
+  vehicles       Vehicle[]
+  pricingProfile PricingProfile?
+  pricingRules   PricingRule[]
+  priceQuotes    PriceQuote[]
 
   @@unique([categoryId, slug])
   @@index([categoryId, isActive, sortOrder])
@@ -362,4 +368,140 @@ model VehicleAvailability {
   @@index([vehicleId, startAt, endAt])
   @@index([startAt, endAt])
   @@map("vehicle_availabilities")
+}
+
+// =====================================================================
+// Pricing (A4a) — deterministic dynamic pricing. Admin owns rules; quote
+// captures a snapshot so later rule edits do NOT mutate live quotes.
+// All money columns are Decimal — never JS number. ADR 0017.
+// =====================================================================
+
+model PricingProfile {
+  id            String      @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  vehicleTypeId String      @unique @map("vehicle_type_id") @db.Uuid
+  currency      String      @default("TRY")
+  baseFee       Decimal     @map("base_fee") @db.Decimal(10, 2)
+  perKmFee      Decimal     @map("per_km_fee") @db.Decimal(10, 2)
+  perHourFee    Decimal     @map("per_hour_fee") @db.Decimal(10, 2)
+  minimumHours  Int         @default(2) @map("minimum_hours")
+  // Distance included in baseFee — only kilometers above this count are billed.
+  includedKm    Int         @default(0) @map("included_km")
+  isActive      Boolean     @default(true) @map("is_active")
+  createdAt     DateTime    @default(now()) @map("created_at")
+  updatedAt     DateTime    @updatedAt @map("updated_at")
+  version       Int         @default(0)
+  vehicleType   VehicleType @relation(fields: [vehicleTypeId], references: [id])
+
+  @@map("pricing_profiles")
+}
+
+enum PricingRuleType {
+  SEASONAL_MULTIPLIER // multiplier active inside [validFrom, validTo]
+  DAY_OF_WEEK_MULTIPLIER // multiplier active when daysOfWeek bitmask matches
+  ADDON // fixed amount the customer can opt into
+}
+
+model PricingRule {
+  id            String           @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  type          PricingRuleType
+  // Optional scoping. NULL = applies to every category / vehicle type.
+  categoryId    String?          @map("category_id") @db.Uuid
+  vehicleTypeId String?          @map("vehicle_type_id") @db.Uuid
+  name          String
+  description   String?
+  // Seasonal range (inclusive). Null = no seasonal bound.
+  validFrom     DateTime?        @map("valid_from") @db.Date
+  validTo       DateTime?        @map("valid_to") @db.Date
+  // Bit-OR mask. Bit 0 = Monday … bit 6 = Sunday. Used by DAY_OF_WEEK type.
+  daysOfWeek    Int?             @map("days_of_week")
+  // SEASONAL_MULTIPLIER + DAY_OF_WEEK_MULTIPLIER use this.
+  multiplier    Decimal?         @db.Decimal(4, 2)
+  // ADDON uses this.
+  fixedAmount   Decimal?         @map("fixed_amount") @db.Decimal(10, 2)
+  // ADDON-only flag: true means the customer chooses, false means always applied.
+  isOptional    Boolean          @default(false) @map("is_optional")
+  sortOrder     Int              @default(0) @map("sort_order")
+  isActive      Boolean          @default(true) @map("is_active")
+  createdAt     DateTime         @default(now()) @map("created_at")
+  updatedAt     DateTime         @updatedAt @map("updated_at")
+  version       Int              @default(0)
+  category      ServiceCategory? @relation(fields: [categoryId], references: [id])
+  vehicleType   VehicleType?     @relation(fields: [vehicleTypeId], references: [id])
+
+  @@index([type, isActive])
+  @@index([validFrom, validTo])
+  @@map("pricing_rules")
+}
+
+enum PriceQuoteStatus {
+  ACTIVE // freshly calculated, within TTL
+  EXPIRED // past TTL — re-request needed
+  CONSUMED // a Booking aggregate now references this quote
+}
+
+model PriceQuote {
+  id                  String           @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  requestedByUserId   String           @map("requested_by_user_id") @db.Uuid
+  vehicleTypeId       String           @map("vehicle_type_id") @db.Uuid
+  categoryId          String           @map("category_id") @db.Uuid
+  // Pickup / dropoff
+  pickupLat           Decimal          @map("pickup_lat") @db.Decimal(10, 7)
+  pickupLng           Decimal          @map("pickup_lng") @db.Decimal(10, 7)
+  pickupAddress       String           @map("pickup_address")
+  dropoffLat          Decimal          @map("dropoff_lat") @db.Decimal(10, 7)
+  dropoffLng          Decimal          @map("dropoff_lng") @db.Decimal(10, 7)
+  dropoffAddress      String           @map("dropoff_address")
+  // Computed by DistanceCalculatorPort (Google Maps / Mock).
+  distanceKm          Decimal          @map("distance_km") @db.Decimal(8, 2)
+  durationMinutes     Int              @map("duration_minutes")
+  // Event window
+  eventStartAt        DateTime         @map("event_start_at")
+  eventEndAt          DateTime         @map("event_end_at")
+  durationHours       Decimal          @map("duration_hours") @db.Decimal(5, 2)
+  // Calculation snapshot. Frozen at create time so later rule edits don't
+  // mutate live quotes. Shape is documented in price-breakdown.vo.ts.
+  breakdown           Json
+  totalAmount         Decimal          @map("total_amount") @db.Decimal(10, 2)
+  currency            String           @default("TRY")
+  // Optional addon rule ids the customer opted into.
+  selectedAddons      String[]         @default([]) @map("selected_addons") @db.Uuid
+  status              PriceQuoteStatus @default(ACTIVE)
+  expiresAt           DateTime         @map("expires_at")
+  consumedAt          DateTime?        @map("consumed_at")
+  consumedByBookingId String?          @map("consumed_by_booking_id") @db.Uuid
+  createdAt           DateTime         @default(now()) @map("created_at")
+  vehicleType         VehicleType      @relation(fields: [vehicleTypeId], references: [id])
+  category            ServiceCategory  @relation(fields: [categoryId], references: [id])
+  booking             Booking?
+
+  @@index([requestedByUserId, status])
+  @@index([expiresAt])
+  @@map("price_quotes")
+}
+
+// =====================================================================
+// Booking (A4a skeleton — A4b will add state machine and the rest of the
+// columns: pickup snapshot, driver assignment, payment refs, audit).
+// For A4a we only need the row to exist so PriceQuote.consumedByBookingId
+// has a target and the FK round-trip is testable.
+// =====================================================================
+
+enum BookingStatus {
+  DRAFT
+  // CONFIRMED, DRIVER_ASSIGNED, IN_PROGRESS, COMPLETED, CANCELLED in A4b
+}
+
+model Booking {
+  id           String        @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  customerId   String        @map("customer_id") @db.Uuid
+  priceQuoteId String        @unique @map("price_quote_id") @db.Uuid
+  status       BookingStatus @default(DRAFT)
+  createdAt    DateTime      @default(now()) @map("created_at")
+  updatedAt    DateTime      @updatedAt @map("updated_at")
+  version      Int           @default(0)
+  customer     User          @relation(fields: [customerId], references: [id])
+  priceQuote   PriceQuote    @relation(fields: [priceQuoteId], references: [id])
+
+  @@index([customerId, status])
+  @@map("bookings")
 }
