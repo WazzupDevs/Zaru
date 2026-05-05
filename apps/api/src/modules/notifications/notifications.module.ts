@@ -24,6 +24,9 @@ import { MockSmsSender } from "./infrastructure/senders/mock-sms-sender";
 import { NetgsmSmsSender } from "./infrastructure/senders/netgsm-sms-sender";
 import { TemplateRenderer } from "./infrastructure/templates/template-renderer";
 import { NotificationWorker } from "./infrastructure/workers/notification.worker";
+import { NotificationsTestController } from "./interface/controllers/notifications-test.controller";
+
+const isProduction = process.env.NODE_ENV === "production";
 
 import type { Env } from "../../config/env";
 
@@ -54,6 +57,7 @@ const MOCK_LOGGER_TOKEN = getLoggerToken(MockSmsSender.name);
     SupplyModule,
     BullModule.registerQueue({ name: NOTIFICATION_QUEUE_NAME }),
   ],
+  controllers: isProduction ? [] : [NotificationsTestController],
   providers: [
     TemplateRenderer,
     { provide: TEMPLATE_RENDERER_PORT, useExisting: TemplateRenderer },
