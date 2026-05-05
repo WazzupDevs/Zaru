@@ -3,12 +3,15 @@ import { forwardRef, Module } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { getLoggerToken, PinoLogger } from "nestjs-pino";
 
+import { BookingModule } from "../booking/booking.module";
 import { IdentityModule } from "../identity/identity.module";
+import { SupplyModule } from "../supply/supply.module";
 import { OutboxNotificationListener } from "./application/listeners/outbox-notification.listener";
 import { NOTIFICATION_QUEUE_NAME } from "./application/notification-queue.constants";
 import { NOTIFICATION_REPOSITORY_PORT } from "./application/ports/notification.repository.port";
 import { SMS_SENDER_PORT, type SmsSenderPort } from "./application/ports/sms-sender.port";
 import { TEMPLATE_RENDERER_PORT } from "./application/ports/template-renderer.port";
+import { NotificationContextProvider } from "./application/services/notification-context.provider";
 import { QueueNotificationUseCase } from "./application/use-cases/queue-notification.use-case";
 import { SendNotificationUseCase } from "./application/use-cases/send-notification.use-case";
 import { PrismaNotificationRepository } from "./infrastructure/persistence/prisma-notification.repository";
@@ -38,12 +41,19 @@ const MOCK_LOGGER_TOKEN = getLoggerToken(MockSmsSender.name);
 @Module({
   imports: [
     forwardRef(() => IdentityModule),
+    // BookingModule + SupplyModule have no back-import to Notifications,
+    // so plain imports are safe (no forwardRef needed). The listener's
+    // NotificationContextProvider injects BOOKING_REPOSITORY_PORT,
+    // DRIVER_PROFILE_REPOSITORY_PORT, VEHICLE_REPOSITORY_PORT.
+    BookingModule,
+    SupplyModule,
     BullModule.registerQueue({ name: NOTIFICATION_QUEUE_NAME }),
   ],
   providers: [
     TemplateRenderer,
     { provide: TEMPLATE_RENDERER_PORT, useExisting: TemplateRenderer },
     { provide: NOTIFICATION_REPOSITORY_PORT, useClass: PrismaNotificationRepository },
+    NotificationContextProvider,
     MockSmsSender,
     NetgsmSmsSender,
     {
