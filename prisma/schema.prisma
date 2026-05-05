@@ -129,6 +129,77 @@ model OutboxEvent {
 }
 
 // =====================================================================
+// Notifications (A4e-1) — outbox events → SMS (and later push/email).
+// PII discipline: recipient_phone + rendered_body are plaintext (provider
+// needs them clear) but log redaction masks both. ADR 0021.
+// =====================================================================
+
+enum NotificationChannel {
+  SMS
+  PUSH // wired in A4e-2
+  EMAIL // Phase 3+
+}
+
+enum NotificationStatus {
+  PENDING // outbox listener queued the row, BullMQ holds the job
+  SENDING // worker picked it up
+  SENT // provider acknowledged (HTTP 200 / "00 ok" from Netgsm)
+  DELIVERED // provider delivery callback (Phase 3+)
+  FAILED // last send attempt errored — retryable until DEAD_LETTERED (A4e-2)
+  DEAD_LETTERED // retry budget exhausted (A4e-2)
+}
+
+enum NotificationKind {
+  // Customer-facing
+  BOOKING_CONFIRMED
+  BOOKING_CANCELLED
+  BOOKING_EXPIRED
+  DRIVER_ASSIGNED_TO_BOOKING
+  // Driver-facing
+  NEW_BOOKING_OFFER
+  BOOKING_CANCELLED_DRIVER
+  // Identity
+  OTP_REQUEST
+}
+
+model Notification {
+  id              String              @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  channel         NotificationChannel
+  kind            NotificationKind
+  recipientUserId String?             @map("recipient_user_id") @db.Uuid
+  // Plaintext on purpose — provider call needs the raw phone. Log
+  // redaction masks `*.recipientPhone`. Stored for audit + replay.
+  recipientPhone  String              @map("recipient_phone")
+
+  templateKey  String @map("template_key") // "booking.confirmed"
+  locale       String @default("tr")
+  // Rendered body — plaintext, log-redacted (`*.renderedBody`). Kept on
+  // the row so support can replay or inspect what the user actually saw.
+  renderedBody String @map("rendered_body")
+
+  status            NotificationStatus @default(PENDING)
+  providerMessageId String?            @map("provider_message_id")
+  providerError     String?            @map("provider_error")
+  retryCount        Int                @default(0) @map("retry_count")
+
+  sourceEventType   String? @map("source_event_type")
+  sourceAggregateId String? @map("source_aggregate_id") @db.Uuid
+
+  createdAt   DateTime  @default(now()) @map("created_at")
+  sentAt      DateTime? @map("sent_at")
+  deliveredAt DateTime? @map("delivered_at")
+  failedAt    DateTime? @map("failed_at")
+
+  @@index([recipientUserId, createdAt])
+  @@index([status, createdAt])
+  @@index([sourceAggregateId])
+  // Idempotency lookup for QueueNotificationUseCase — find duplicates
+  // within a 24h window keyed by (sourceAggregateId, kind, recipientPhone).
+  @@index([sourceAggregateId, kind, recipientPhone, createdAt])
+  @@map("notifications")
+}
+
+// =====================================================================
 // Catalog (A3a) — polymorphic vertical model. New verticals (oto kurtarıcı,
 // vale, kurumsal servis) are added by inserting category + attribute defs,
 // not by writing code. See ADR 0012.

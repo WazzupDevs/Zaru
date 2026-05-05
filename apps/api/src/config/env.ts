@@ -15,7 +15,21 @@ export const envSchema = z.object({
   OTP_CODE_TTL_SECONDS: z.coerce.number().int().positive().default(300),
   OTP_MAX_VERIFY_ATTEMPTS: z.coerce.number().int().positive().default(5),
 
+  // Legacy A2c knob — still respected for forced overrides, but the
+  // primary selection happens via NETGSM_USERCODE dummy-prefix pattern
+  // (see notifications.module.ts factory). ADR 0021.
   SMS_DRIVER: z.enum(["mock", "netgsm"]).default("mock"),
+
+  // --- Netgsm SMS provider (A4e-1) — ADR 0021 ---
+  // A usercode starting with `DUMMY_` flips the factory to MockSmsSender
+  // (dev/test/CI). Replace with a real Netgsm panel usercode in prod.
+  NETGSM_USERCODE: z.string().min(5).default("DUMMY_REPLACE_WITH_REAL_USERCODE"),
+  NETGSM_PASSWORD: z.string().min(5).default("DUMMY_REPLACE_WITH_REAL_PASSWORD"),
+  // 1–11 chars, A–Z + 0–9. Netgsm panel verifies this header.
+  NETGSM_SENDER: z
+    .string()
+    .regex(/^[A-Z0-9]{1,11}$/)
+    .default("EVENTFLEET"),
 
   SENTRY_DSN: z.string().url().optional(),
 

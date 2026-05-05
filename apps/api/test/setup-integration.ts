@@ -72,6 +72,9 @@ export async function setup(): Promise<void> {
   process.env.OTP_CODE_TTL_SECONDS ??= "300";
   process.env.OTP_MAX_VERIFY_ATTEMPTS ??= "5";
   process.env.SMS_DRIVER ??= "mock";
+  process.env.NETGSM_USERCODE ??= "DUMMY_TEST_USERCODE";
+  process.env.NETGSM_PASSWORD ??= "DUMMY_TEST_PASSWORD";
+  process.env.NETGSM_SENDER ??= "EVENTFLEET";
   // PII hashing: deterministic dummy is fine for tests; real secret only in dev/prod.
   process.env.PII_HMAC_SECRET ??= "2".repeat(64);
   // Storage env: pointed at the test MinIO container. Bucket created below.
