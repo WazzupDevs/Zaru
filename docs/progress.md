@@ -1982,6 +1982,93 @@ NetgsmSmsSender + PrimaryFallbackSmsSender`
 - A4c-payment: iyzico Marketplace adapter
 - Live Netgsm staging deploy + manuel doğrulama
 
+---
+
+## 2026-05-11 — Session A4e-2: Notifications Completion (Retry/DLQ + Cross-Module + Admin)
+
+A4e-1'in deferred iki event flow'u tamamlandı, retry + DLQ devreye
+girdi, admin monitoring + HTTP test inbox açıldı.
+
+### Done
+
+**Cross-module read katmanı**
+
+- `NotificationContextProvider` — getCustomerContext + getBookingContext
+  - getDriverContext (driver → user → vehicle chain)
+- Privacy: `shortenAddress` ikinci virgülden sonrasını düşürür
+- 8 unit test (full chain happy + missing user/booking/driver/vehicle)
+
+**Listener tamamlanması**
+
+- `BookingExpired` → customer SMS (booking lookup chain)
+- `DriverDispatched` → 2 SMS fan-out (driver NEW_BOOKING_OFFER +
+  customer DRIVER_ASSIGNED_TO_BOOKING)
+- `BookingCancelled` artık her iki path için (customer + admin) çalışır
+  — A4e-1'in CUSTOMER-only short-circuit'i kaldırıldı
+
+**Retry + DLQ (ADR 0022)**
+
+- `NotificationDeadLetter` tablosu (snapshot pattern, UNIQUE
+  notification_id, attemptHistory + investigation audit kolonları)
+- `notifications.attempt_history` JSON kolonu (per-attempt journal)
+- `NOTIFICATION_MAX_ATTEMPTS=5` + `NOTIFICATION_BACKOFF_DELAY_MS=2000`
+  env'leri (~30s total window)
+- `DeadLetterNotificationUseCase` — snapshot + DEAD_LETTERED transition
+  - PII-free outbox event
+- Worker `process()` final attempt fail → deadLetterUseCase + throw
+- `SendNotificationUseCase` her hata sonrası `appendAttempt`
+
+**Admin monitoring**
+
+- `AdminNotificationsController` `@Roles("ADMIN")`:
+  list / retry / dead-letters / investigate
+- 4 küçük use case (admin-notification.use-cases.ts'te birlikte)
+- List view PII drop, detail view (retry response) full
+
+**Test ergonomi: HTTP mock inbox**
+
+- `/notifications/_test/last-sms`, `/inbox`, `/clear`
+- A4b OTP test endpoint pattern (NODE_ENV guard + module conditional)
+- Smoke step 14 docker exec psql → fetch HTTP
+
+### Verification
+
+| Kontrol          | Sonuç                                                         |
+| ---------------- | ------------------------------------------------------------- |
+| `pnpm typecheck` | ✓                                                             |
+| `pnpm lint`      | ✓                                                             |
+| API unit tests   | **274** PASS (baseline 266 → +8)                              |
+| Smoke (live)     | A4e-1'de doğrulandı; A4e-2 değişiklikler unit + manual review |
+
+### Plandan sapmalar (gerekçeli)
+
+| Sapma                                                   | Gerekçe                                                                                                     |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| **G3 Push (ExpoPushSender) — A5+'a deferred**           | Push consumer yok; A4d mobile token registration gelene kadar full schema migration + adapter scope-creep   |
+| **G6 Testcontainers integration spec — A5+'a deferred** | A4e-1 smoke + A4e-2 unit testler kapsam veriyor; full chain spec ~1000 satır marjinal değer                 |
+| **G5 admin minimal**: stats endpoint yok                | List + retry + DLQ list + investigate yetiyor; sent_today/failed_today A4d admin UI'da query ile alınabilir |
+| **BullMQ retry config per-job, registerQueue'da değil** | NestJS BullModule.registerQueue `defaultJobOptions` desteklemiyor — `.add()`'e gömüldü                      |
+| **Admin retry attempts: 1**                             | Manuel retry tek shot — admin UI sonucu görür, gerekirse tekrar tıklar                                      |
+| **shortenAddress** sade kural (2nd comma)               | Brief detaylı pattern istemiyordu; "neighborhood, district" çoğu TR adres formatında doğru                  |
+
+### Final commit listesi (branch)
+
+| #   | Commit  | Konu                                                                  |
+| --- | ------- | --------------------------------------------------------------------- |
+| 1   | 5dbb2e1 | feat(notifications): context provider + 4 event handlers tam wired    |
+| 2   | ec052e1 | feat(notifications): retry policy + DLQ + admin replay + ADR 0022     |
+| 3   | c2b082e | feat(notifications): test-only mock inbox endpoint + http smoke       |
+| 4   | 8855ca3 | feat(notifications): admin monitoring (list, retry, dlq, investigate) |
+| 5   | (bu)    | docs: log session A4e-2 progress                                      |
+
+### Next (A4d / A4c-payment / A5+)
+
+- A4d: admin manual-review queue UI + online drivers dashboard +
+  driver fixture seed for smoke driver SMS
+- A4c-payment: iyzico Marketplace adapter
+- A5+: Expo push adapter + live Netgsm staging + DLQ Slack alert +
+  notifications Testcontainers integration spec
+
 <!--
 Şablon (yeni oturum buradan başlasın):
 

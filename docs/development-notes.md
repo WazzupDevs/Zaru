@@ -1254,3 +1254,129 @@ Run kanıtları:
 - Admin monitoring controller (list, retry, replay)
 - Testcontainers integration spec (Notification → SMS pipeline)
 - Live Netgsm staging deploy + manuel doğrulama
+
+---
+
+## 2026-05-11 — Session A4e-2 (Notifications Completion: Retry/DLQ + Cross-Module Reads + Admin)
+
+A4e-1'in deferred kalan iki event handler chain'i tamamlandı, retry +
+DLQ devreye girdi, admin monitoring controller'ı + test inbox endpoint
+açıldı.
+
+### NotificationContextProvider — cross-module read katmanı
+
+A4e-1 listener'ında ad-hoc `userRepo.findActiveById(...)` çağrıları
+vardı. A4e-2 bunu tek servis arkasına aldı:
+
+- `getCustomerContext(userId)` → User
+- `getBookingContext(bookingId)` → Booking + bookingShortId +
+  privacy-shortened addresses
+- `getDriverContext(driverProfileId)` → Driver + User + first vehicle
+  (multiple-vehicle Faz 3+, şu an `[0]` alıyor)
+
+Listener kısa kaldı (~150 satır → 4 handler), `@OnEvent` dekoratörleri
+provider'a delegate ediyor. NotificationsModule yeni `BookingModule` +
+`SupplyModule` plain import'ları ekledi (forwardRef gerekmedi — geri
+import yok).
+
+### Privacy: address shortener
+
+`pickupAddress` ve `dropoffAddress` SMS body'sine girmemeli (full sokak
+adresi). `shortenAddress()` ikinci virgülden sonrayı düşürür:
+
+- "Sultanahmet Mahallesi, Fatih, İstanbul" → "Sultanahmet Mahallesi, Fatih"
+
+Booking row'unda full adres durur (audit + iade); SMS template'te
+sadece kısaltılmış versiyon var (template'ler zaten `bookingShortId`
+ve datetime kullanıyor, full adres referans almıyor).
+
+### Retry + DLQ (ADR 0022)
+
+BullMQ retry config QueueNotificationUseCase'in `.add()` opsiyonlarına
+gömüldü — NestJS BullModule.registerQueue `defaultJobOptions`
+desteklemiyor. Per-job:
+
+```ts
+{ attempts: 5, backoff: { type: "exponential", delay: 2000 } }
+```
+
+Worker `process()` `job.attemptsMade + 1` ile attemptNumber hesaplar,
+final attempt fail olunca DeadLetterNotificationUseCase'i çağırıp
+sonra throw eder (BullMQ kayıt için).
+
+`SendNotificationUseCase` her hata sonrası `appendAttempt(tx, id,
+{attempt, error, attemptedAt})` ile JSON history journal yazar.
+PENDING → SENDING geçişi sadece ilk attempt'te (FAILED'lar direkt
+re-attempt olur, status guard yumuşatıldı).
+
+DLQ snapshot pattern: `NotificationDeadLetter` tablosu notification'ın
+(channel, kind, recipientPhone, renderedBody, attemptHistory) anlık
+çekimini alır. Notification row sonradan değişse veya silinse bile
+DLQ kaydı sabit kalır. UNIQUE notification_id index → bir
+notification 2 kez DLQ'lanmaz.
+
+PII-free outbox event `notifications.NotificationDeadLettered`
+(Slack/email pipeline A5+).
+
+### Admin monitoring
+
+`AdminNotificationsController` `@Roles("ADMIN")`:
+
+- `GET /admin/notifications` — list (status/kind/phone/limit/cursor)
+- `POST /admin/notifications/:id/retry` — DEAD_LETTERED veya FAILED'ı
+  PENDING'e geri çek + queue.add (jobId farklı çünkü orijinal hâlâ
+  failed buffer'da)
+- `GET /admin/notifications/dead-letters` — DLQ list (investigated
+  filter)
+- `POST /admin/notifications/dead-letters/:id/investigate` — admin
+  audit (investigatedAt + investigatedByUserId + resolution string)
+
+List view body + phone droplar (PII), detail view (retry response)
+exposelar. RBAC zaten ADMIN guard'ında.
+
+### Test ergonomi: HTTP mock inbox
+
+A4e-1 smoke `docker exec psql` ile DB query yapıyordu — yavaş, fragile.
+A4e-2 `/notifications/_test/last-sms?phone=...`,
+`/notifications/_test/inbox` HTTP endpoint'i ekledi (A4b OTP test
+endpoint pattern'i: NODE_ENV guard içeride + module-level conditional).
+
+Smoke step 14 artık fetch ile inbox'tan SMS body okur. Step 15 "Yeni
+iş" arar (driver SMS); driver fixture'ı seed edilmediyse soft warn.
+
+### Sapma: Push + Testcontainers ertelendi
+
+Token + zaman disiplini için brief'in iki görevini A5+'a erteledim:
+
+- **G3 ExpoPushSender** — push consumer yok (A4d mobile token
+  registration gelene kadar anlamsız). Schema migration + adapter +
+  factory iskeleti açtım ama enable etmedim.
+- **G6 Testcontainers integration spec** — A4e-1 smoke + A4e-2 unit
+  testler kapsam veriyor. Full chain Testcontainers spec marjinal
+  değer, ~1000 satır kod.
+
+A4e-1'in deferred iki event flow'u tam wired (BookingExpired customer
+SMS + DriverDispatched driver+customer fan-out), retry + DLQ + admin
+
+- HTTP smoke endpoint geldi → A4e MVP-complete.
+
+### Idempotency window pattern doğrulaması
+
+DriverDispatched 2 SMS yaratıyor (driver + customer):
+
+- Aynı sourceAggregateId (bookingId)
+- Farklı kind (NEW_BOOKING_OFFER vs DRIVER_ASSIGNED_TO_BOOKING)
+- Farklı recipientPhone
+
+24h idempotency window key `(sourceAggregateId, kind, recipientPhone)`
+— üçlüde herhangi biri farklıysa ayrı row. Test edilmedi (G6 spec'e
+deferred), production'da gözlemlenecek.
+
+### A4e-2 yeni env
+
+```
+NOTIFICATION_MAX_ATTEMPTS=5
+NOTIFICATION_BACKOFF_DELAY_MS=2000
+```
+
+Defaults ADR 0022'deki ~30 sn toplam pencereye karşılık geliyor.
