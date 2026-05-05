@@ -1,0 +1,1 @@
+Event Fleet: Sayın {{customerName}}, {{eventDate}} tarihindeki rezervasyonunuz onaylandı. Toplam {{totalAmount}} TRY. Sürücü ataması yapılıyor. Kod: {{bookingShortId}}
