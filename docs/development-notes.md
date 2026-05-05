@@ -1022,3 +1022,129 @@ booking lifecycle de o pakette test edilebilir.
 - Booking lifecycle Testcontainers spec
 - Driver no-show senaryosu için state machine `IN_PROGRESS → CANCELLED_BY_DRIVER`
   düşüncesi (ADR güncellenir)
+
+---
+
+## 2026-05-07 — Session A4c (Dispatch — Driver Matching + Assignment)
+
+A4b'nin DRIVER_ASSIGNED state'i state machine'de hazırdı ama hiçbir use
+case oraya geçmiyordu. A4c bu boşluğu kapatır: PostGIS konum sorgusu,
+deterministic scoring matcher, atomic assign + availability sentinel,
+30 s tick BullMQ worker, manual reassign, driver location/online updates.
+
+### PostGIS — generated geography column + GIST index
+
+`driver_profiles` tablosuna `last_known_lat/lng` (Decimal 10,7) eklendi,
+yanına `last_known_location geography(Point, 4326) GENERATED ALWAYS AS
+(... ST_SetSRID(ST_MakePoint(lng, lat), 4326)::geography ...) STORED`.
+Postgres lat/lng değişince column'u otomatik üretir; STORED diskte yer
+kaplar ama her query'de hesap maliyeti olmaz.
+
+GIST index partial: `WHERE last_known_location IS NOT NULL AND deleted_at
+IS NULL`. `ST_DWithin(geography, geography, meters)` index'i kullanır,
+candidate query <50 ms. Prisma DSL PostGIS'i bilmiyor — bu üç parça raw
+SQL ile migration'da; client tarafında kolon Prisma şemasında `Decimal?`
+olarak görünüyor (generated column generated client'ta görünmez ama bu
+sorun değil — sadece SQL query'sinde kullanıyoruz).
+
+### Raw SQL pattern
+
+`tx.$queryRaw<RawRow[]>(Prisma.sql\`...\`)`—`${variable}`ile parameter
+binding (SQL injection güvenli). Mevcut precedent`apps/api/src/common/outbox/outbox-drain.service.ts`. NUMERIC kolonları
+JS tarafında string olarak gelir; mapper `Number(x)` ile çevirir.
+
+### Deterministic matching (no ML)
+
+Score = `0.7 × (1 - dist/maxRadius) + 0.3 × (rating/5)`. Tie-break
+`driverProfileId` asc — aynı input aynı pick. Test'ler tam değer pinler:
+5 km / 5.0 rating → 0.86, 1 km / 4.0 rating → 0.912 (1 km en yakın
+yüksek skor). 12 matcher unit test.
+
+ADR 0020 — bu kararın gerekçesi + alternatifler (FCFS broadcast,
+bidding, ML).
+
+### Atomic assign + availability sentinel (race-safe)
+
+Tek tx içinde:
+
+1. `assignDriver(tx, { fromVersion })` — `WHERE status='CONFIRMED' AND
+version=fromVersion`. Concurrent dispatch null döner → throw
+   `ConcurrentDispatchError`.
+2. `availability.create({ type: 'BOOKED', bookingId })` — paralel
+   dispatch tick'i bu sürücüyü bir daha aday görmez.
+3. Outbox event (PII-free).
+
+Bu sıra brief'in 4.2'sinden farklı (orada availability search içinde
+filtered varsayılıyordu — biz INSERT'i sentinel olarak kullanıyoruz).
+PostgreSQL READ COMMITTED altında uncommitted INSERT görünmez, ama
+commit sonrası bir sonraki worker tick'inde kesin filter.
+
+### ManualReassign — state machine'i değiştirmedik
+
+DRIVER_ASSIGNED'da admin başka driver atayabilmeli. Brief önerisi: state
+DRIVER_ASSIGNED → CONFIRMED → DRIVER_ASSIGNED round-trip. Daha temiz
+çözüm: `reassignDriver` repo metodu — `WHERE status='DRIVER_ASSIGNED'`,
+sadece driverId/vehicleId/driverAssignedAt/dispatchAttempts/lastDispatchAt
+güncellenir, status değişmez. State machine table'ı (ADR 0019) sabit
+kalır. Önceki BOOKED availability soft-delete'lenir.
+
+### BookingExpiry pattern'inin tekrarı
+
+`BookingDispatchService` (saf logic, FrozenClock test edilebilir),
+`BookingDispatchWorker` (BullMQ shell), `BookingDispatchScheduler`
+(`OnModuleInit` + `queue.add(..., { repeat: { every } })`,
+`OnApplicationShutdown` + `queue.close`). A4b precedent ile aynı.
+
+### Cooldown + max attempts
+
+`findDispatchable`: `dispatchAttempts < DISPATCH_MAX_ATTEMPTS` (default 3)
+AND `(lastDispatchAt IS NULL OR lastDispatchAt < now - cooldownMs)`
+(default 60 s). Worker boşa beat etmez.
+
+`requiresManualReview: true` event payload'da `attempts >= max`. A4d/A4e
+admin paneli buradan beslenir.
+
+### Outbox PII discipline (sürdürülüyor)
+
+3 dispatch event payload:
+
+- `dispatch.DriverDispatched` — bookingId, driverProfileId, vehicleId,
+  distanceKm, score, attempts, dispatchedAt
+- `dispatch.DispatchFailed` — bookingId, attempts, reason,
+  requiresManualReview, failedAt
+- `dispatch.ManualReassignment` — bookingId, previousDriverProfileId,
+  newDriverProfileId, reassignedByUserId, reassignedAt
+
+Hiçbiri driver name / plate / lat/lng / address taşımıyor.
+
+### Smoke kanıtı
+
+`scripts/smoke-booking-flow.mjs` 11 → **13 adım**. Yeni adımlar:
+
+- Step 12: ikinci booking confirm (farklı event window — cancel'lanan
+  booking ile çakışmasın), 65 s rate-limit beklemesi
+- Step 13: 5 s aralıklarla GET /bookings/:id polling, ≤ 90 s içinde
+  status `DRIVER_ASSIGNED` + driverId set bekle
+
+Smoke runtime kanıtları:
+
+- Booking2 status → DRIVER_ASSIGNED (worker 30 s tick içinde)
+- driverId/vehicleId set (seed fixture driver eşleşti)
+- Outbox: BookingCreated + BookingConfirmed + **dispatch.DriverDispatched**
+  hepsi `processed_at IS NOT NULL` (BullMQ outbox drain doğrulandı)
+
+Driver fixture seed (`prisma/seed.ts seedDispatchFixture()`): admin
+phone'la ayrı bir DRIVER user, APPROVED profile near Sultanahmet
+(41.0095, 28.9800), ACTIVE classic-sedan vehicle. Idempotent (deterministic
+UUID'ler). Production guard'lı.
+
+### A4d/A4e/A4f'ye devredilenler
+
+- Driver kabul/red akışı (driver app'te match edilince bildirim,
+  onay/red, red ise reassign tetikle)
+- Notifications (driver SMS/push, customer "sürücünüz yolda" SMS)
+- Admin manual-review queue UI (dispatchAttempts >= max + dispatchFailedReason)
+- Online drivers monitoring dashboard
+- Real-time driver location streaming (websocket — Faz 3+)
+- DriverSearchRepo Testcontainers integration spec (CI'da PostGIS
+  query'sinin gerçek DB'de doğrulanması — şimdilik smoke runtime kanıt)

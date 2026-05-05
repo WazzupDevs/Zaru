@@ -1671,6 +1671,178 @@ Yeni unit testler:
 - Booking lifecycle Testcontainers spec (payment ile birlikte)
 - Customer mobile flow (paralel A4e)
 
+---
+
+## 2026-05-07 — Session A4c: Dispatch (Driver Matching + Assignment)
+
+A4b'nin DRIVER_ASSIGNED state'i state machine'de hazırdı, A4c bu boşluğu
+kapatıp dispatch loop'unu canlı runtime'a bağladı.
+
+### Done
+
+**PostGIS + schema**
+
+- `driver_profiles` 7 yeni kolon (`last_known_lat/lng`,
+  `last_location_update`, `is_online`, `rating_average/count`) +
+  generated `geography(Point, 4326)` kolonu + GIST index (partial:
+  not-null + not-deleted)
+- `bookings` 3 yeni kolon (`dispatch_attempts`, `last_dispatch_at`,
+  `dispatch_failed_reason`)
+- 8 yeni env knob (`DISPATCH_*`) + `.env.example` + integration setup
+- Migration `prisma migrate diff --script` ile, manuel PostGIS bloğu
+  eklenmiş (CLAUDE.md kuralı)
+
+**Domain + matcher**
+
+- `MatchingPolicy` VO + `isPolicyValid` bounds check
+- `DriverMatcher.pickBestMatch(candidates, policy)` — pure scoring,
+  deterministic tie-break (driverProfileId asc)
+- `DispatchPolicyService` — env'den policy okur
+- 6 dispatch error: `NoAvailableDriverError`,
+  `BookingNotDispatchableError`, `ConcurrentDispatchError`,
+  `InvalidDispatchPolicyError`, `DriverProfileNotFoundError`,
+  `DriverLocationForbiddenError`
+- 3 event tipi (`dispatch.DriverDispatched/DispatchFailed/ManualReassignment`)
+  PII-free payload kontratları
+
+**Search adapter**
+
+- `DriverSearchRepositoryPort` — `findCandidates(input)`
+- `PrismaDriverSearchRepository` — tek `$queryRaw` 5 hard filter
+  (online + freshness + vehicleType + radius + availability/booking
+  conflicts), `ST_DWithin` GIST index'i kullanır, distance ASC + LIMIT 50
+
+**Booking + supply repository extensions**
+
+- `BookingRepositoryPort` 4 yeni metod: `assignDriver` (atomic
+  CONFIRMED → DRIVER_ASSIGNED), `reassignDriver` (DRIVER_ASSIGNED swap,
+  state machine değişmedi), `recordDispatchFailure`, `findDispatchable`
+- `BookingEntity` 3 yeni alan (`dispatchAttempts`, `lastDispatchAt`,
+  `dispatchFailedReason`) + tüm spec factory'ler güncellendi
+- `DriverProfileRepositoryPort` 2 yeni metod: `updateLocation`,
+  `setOnline`
+- `VehicleAvailabilityRepositoryPort` `bookingId` create input'unda +
+  `findBookedForBooking` lookup
+- `SupplyModule` 3 repo token export ediyor (cross-module injection
+  için, Booking precedent'i)
+
+**Use cases (test-first)**
+
+- `AssignDriverToBookingUseCase` — owner check yok (worker-tetikli),
+  status guard, search → match → atomic assign + availability sentinel
+  - outbox. 10 unit test (PII assertion, race, attempts, requiresManualReview)
+- `ManualReassignDriverUseCase` (admin) — soft-delete previous BOOKED,
+  excludeDriverIds match, reassignDriver, audit event
+- `UpdateDriverLocationUseCase` — owner check + admin bypass
+  (`actor.allowAdmin`)
+- `SetDriverOnlineStatusUseCase` — owner check + admin bypass
+
+**Worker triplet (BullMQ, codebase precedent)**
+
+- `BookingDispatchService.sweep()` — `findDispatchable` → her aday için
+  AssignDriver, exception isolated, counter return. 4 unit test.
+- `BookingDispatchWorker` — `@Processor concurrency:1`, service'i çağırır
+- `BookingDispatchScheduler` — `OnModuleInit` `queue.add(..., { repeat: every: 30_000 })`
+
+**Controllers**
+
+- `/dispatch/drivers/:id/{location,online-status}` — driver-app surface
+  (owner check)
+- `/admin/dispatch/bookings/:id/reassign` — admin override
+- `/admin/dispatch/drivers/:id/{online-status,location}` — smoke fixture
+  helper (admin bypass owner check)
+- `IdempotencyInterceptor` her mutating endpoint'te
+
+**Shared-types**
+
+- 5 zod schema (`UpdateDriverLocationInput`,
+  `SetDriverOnlineStatusInput`, `ReassignDriverInput`,
+  `DriverDispatchStatusResponse`)
+
+**Module wiring**
+
+- `DispatchModule` — Booking + Supply import, BullMQ queue register,
+  3 service + 1 repo port + 4 use case + worker triplet provider
+- `AppModule` import'lara `DispatchModule` eklendi
+
+**Smoke kanıtı (canlı runtime)**
+
+- `prisma/seed.ts seedDispatchFixture()` — admin'den ayrı bir DRIVER
+  user, APPROVED + online + Sultanahmet'e yakın lokasyon, ACTIVE
+  classic-sedan vehicle. Production guard'lı.
+- `scripts/smoke-booking-flow.mjs` 11 → **13 adım**:
+  - Step 12: ikinci booking confirm (rate-limit için 65 s wait, farklı
+    event window)
+  - Step 13: 5 s aralıklarla GET /bookings/:id polling, ≤ 90 s içinde
+    DRIVER_ASSIGNED + driverId set bekle
+- Smoke YEŞİL — booking2 worker tarafından dispatch edildi, fixture
+  driver atandı, outbox'ta `dispatch.DriverDispatched` processed
+
+**ADR + docs**
+
+- `docs/adr/0020-dispatch-strategy.md` — deterministic weighted scoring
+  - PostGIS kararı, alternatives (FCFS broadcast, bidding, ML), revisit
+    trigger'lar
+- `docs/development-notes.md` — A4c bölümü (PostGIS pattern, raw SQL,
+  matcher determinism, atomic assign + sentinel, manual reassign rationale,
+  worker triplet, cooldown + max attempts, outbox PII, smoke kanıtı)
+
+### Verification
+
+| Kontrol                   | Sonuç                                    |
+| ------------------------- | ---------------------------------------- |
+| typecheck                 | ✓ 3/3 paket                              |
+| lint                      | ✓ 3/3 paket                              |
+| build                     | ✓ 3/3 paket                              |
+| API unit tests            | **253** PASS (baseline 227 → +26)        |
+| Smoke (live API, 13 step) | ✓ booking confirm + cancel + dispatch    |
+| Outbox events             | ✓ Created + Confirmed + DriverDispatched |
+| Worker tick               | ✓ ≤ 60 s'de dispatch (default 30 s tick) |
+
+Yeni unit testler:
+
+- `driver-matcher.service.spec.ts` 12 test (filter, scoring math pin,
+  determinism, weight extremes, policy bound validation)
+- `assign-driver-to-booking.use-case.spec.ts` 10 test (happy path with
+  closest pick, PII-free payload, status guards, missing booking,
+  failure reasons, manual-review threshold, excludeDriverIds, race)
+- `booking-dispatch.service.spec.ts` 4 test (config plumbing, counters,
+  exception isolation)
+
+### Plandan sapmalar (gerekçeli)
+
+| Sapma                                                | Gerekçe                                                                                                                                                               |
+| ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Dispatch matching factory (mock+prod) yok            | PostGIS lokal her ortamda var (CI dahil); Pricing'deki DistanceCalculator pattern'i bu durumda overkill.                                                              |
+| `Service+Worker+Scheduler` triplet                   | Brief tek class veriyordu; A4b precedent triplet (BookingExpiry/PriceQuoteCleanup), uyumlu hale getirdim.                                                             |
+| `reassignDriver` (state DRIVER_ASSIGNED kal)         | Brief DRIVER_ASSIGNED → CONFIRMED → DRIVER_ASSIGNED round-trip öneriyordu; bu yaklaşım state machine table'ı (ADR 0019) değiştirmeden manuel reassign'ı atomic yapar. |
+| Smoke: worker tetiklemek için test-only endpoint yok | Brief 8.1'deki `POST /test/dispatch/:bookingId` yerine: smoke seed driver fixture'ı + 90 s polling. Worker'ın gerçek runtime'ını test eder.                           |
+| Lifecycle/integration spec (Testcontainers) yok      | A4b precedent; smoke happy path + race + outbox drain'i runtime'da kanıtladı. A4d (driver mobile) ya da A4c-payment ile birlikte yazılacak.                           |
+
+### Final commit listesi
+
+| #   | Commit hash | Konu                                                                           |
+| --- | ----------- | ------------------------------------------------------------------------------ |
+| 1   | 6ef96ce     | feat(db): add driver location and booking dispatch metadata                    |
+| 2   | 04f0fcf     | feat(dispatch): add module skeleton with errors, events, and policy VO         |
+| 3   | 104c6f8     | feat(dispatch): add driver matcher, policy service, and postgis search adapter |
+| 4   | 50db2f5     | feat(booking,supply): expose dispatch hooks on existing repositories           |
+| 5   | dd32065     | feat(dispatch): implement assign driver use case with race-safe handoff        |
+| 6   | 2394188     | feat(dispatch): add worker triplet, reassign, location, controllers            |
+| 7   | 42834a4     | chore: extend a4b smoke with dispatch verification + seed driver fixture       |
+| 8   | (bu commit) | docs: add ADR 0020 + log session A4c progress                                  |
+
+### Next (A4d / A4e / A4f / A4c-payment)
+
+- Driver kabul/red akışı (driver app match edince bildirim, onay/red,
+  red ise reassign tetikle) — A4f driver mobile
+- Notifications (driver SMS/push, customer "sürücünüz yolda" SMS) — A4e
+- Admin manual-review queue UI (dispatchAttempts >= max) — A4d
+- Online drivers monitoring dashboard — A4d
+- DriverSearchRepo Testcontainers integration spec — A4d/A4e
+- Payment (iyzico Marketplace) — A4c-payment (ayrı kapsam, A4b'den
+  devredilen)
+
 <!--
 Şablon (yeni oturum buradan başlasın):
 
