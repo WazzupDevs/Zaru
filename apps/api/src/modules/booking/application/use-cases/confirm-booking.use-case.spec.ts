@@ -125,6 +125,10 @@ function buildHarness() {
     transitionStatus: vi.fn(),
     expireDraftsOlderThan: vi.fn(),
     listForCustomer: vi.fn(),
+    assignDriver: vi.fn(),
+    reassignDriver: vi.fn(),
+    recordDispatchFailure: vi.fn(),
+    findDispatchable: vi.fn(),
   };
 
   class FakeTxRunner implements TxRunnerPort {

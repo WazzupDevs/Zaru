@@ -59,6 +59,10 @@ function buildHarness(expiredRows: BookingEntity[]) {
     transitionStatus: vi.fn(),
     expireDraftsOlderThan: vi.fn(async () => expiredRows),
     listForCustomer: vi.fn(),
+    assignDriver: vi.fn(),
+    reassignDriver: vi.fn(),
+    recordDispatchFailure: vi.fn(),
+    findDispatchable: vi.fn(),
   };
   const outbox: OutboxWriterPort = { write: vi.fn(async () => undefined) };
   const clock = new FrozenClock(NOW);

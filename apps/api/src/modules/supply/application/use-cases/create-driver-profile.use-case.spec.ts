@@ -94,6 +94,12 @@ class FakeRepo implements DriverProfileRepositoryPort {
   async listPending() {
     return { items: [], nextCursor: null };
   }
+  async updateLocation() {
+    return true;
+  }
+  async setOnline() {
+    return true;
+  }
 }
 
 function buildHasher(): PiiHasher {

@@ -82,6 +82,10 @@ function buildHarness(initial: Partial<BookingEntity> = {}) {
     }),
     expireDraftsOlderThan: vi.fn(),
     listForCustomer: vi.fn(),
+    assignDriver: vi.fn(),
+    reassignDriver: vi.fn(),
+    recordDispatchFailure: vi.fn(),
+    findDispatchable: vi.fn(),
   };
 
   const outbox: OutboxWriterPort = { write: vi.fn(async () => undefined) };

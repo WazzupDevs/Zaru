@@ -47,6 +47,32 @@ export interface BookingListFilter {
   limit?: number;
 }
 
+export interface AssignDriverInput {
+  id: string;
+  fromVersion: number;
+  driverId: string;
+  vehicleId: string;
+  assignedAt: Date;
+  /** Updated dispatchAttempts value to write atomically with the transition. */
+  dispatchAttempts: number;
+}
+
+export interface DispatchMetadataInput {
+  id: string;
+  fromVersion: number;
+  dispatchAttempts: number;
+  lastDispatchAt: Date;
+  dispatchFailedReason: string | null;
+}
+
+export interface FindDispatchableInput {
+  maxAttempts: number;
+  /** Skip rows touched in the last `cooldownMs` milliseconds. */
+  cooldownMs: number;
+  now: Date;
+  limit?: number;
+}
+
 export interface BookingRepositoryPort {
   create(tx: TxClient, input: CreateBookingInput): Promise<BookingEntity>;
   findById(tx: TxClient, id: string): Promise<BookingEntity | null>;
@@ -66,4 +92,31 @@ export interface BookingRepositoryPort {
   expireDraftsOlderThan(tx: TxClient, cutoff: Date, now: Date): Promise<BookingEntity[]>;
   /** Customer-scoped list with optional status filter and id-cursor pagination. */
   listForCustomer(tx: TxClient, filter: BookingListFilter): Promise<BookingEntity[]>;
+  /**
+   * Atomic CONFIRMED → DRIVER_ASSIGNED with driver/vehicle assignment.
+   * `where` includes `status='CONFIRMED' AND version=fromVersion`, so
+   * stale callers see null. Returns the updated entity on success.
+   */
+  assignDriver(tx: TxClient, input: AssignDriverInput): Promise<BookingEntity | null>;
+  /**
+   * Records a failed dispatch attempt without changing status. Updates
+   * dispatchAttempts + lastDispatchAt + dispatchFailedReason. Caller
+   * still emits the dispatch.DispatchFailed outbox event.
+   */
+  recordDispatchFailure(tx: TxClient, input: DispatchMetadataInput): Promise<boolean>;
+  /**
+   * CONFIRMED bookings the dispatch worker can attempt right now —
+   * dispatchAttempts < max AND lastDispatchAt is null OR older than the
+   * cooldown. Ordered by createdAt ASC (FIFO fairness).
+   */
+  findDispatchable(tx: TxClient, input: FindDispatchableInput): Promise<BookingEntity[]>;
+  /**
+   * Atomic driver swap on a DRIVER_ASSIGNED booking. Status stays
+   * DRIVER_ASSIGNED — only driverId/vehicleId/driverAssignedAt change,
+   * dispatchAttempts increments. Avoids the state-machine round-trip
+   * (DRIVER_ASSIGNED → CONFIRMED → DRIVER_ASSIGNED) that would otherwise
+   * be needed for manual reassign. Where guard enforces current status
+   * + version.
+   */
+  reassignDriver(tx: TxClient, input: AssignDriverInput): Promise<BookingEntity | null>;
 }

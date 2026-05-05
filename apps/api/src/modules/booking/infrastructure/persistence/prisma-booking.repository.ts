@@ -4,9 +4,12 @@ import { Prisma } from "@prisma/client";
 import type { TxClient } from "../../../../common/persistence/tx-client";
 import type { BookingEntity } from "../../domain/booking-types";
 import type {
+  AssignDriverInput,
   BookingListFilter,
   BookingRepositoryPort,
   CreateBookingInput,
+  DispatchMetadataInput,
+  FindDispatchableInput,
   TransitionBookingStatusInput,
 } from "../../domain/ports/booking.repository.port";
 
@@ -105,6 +108,86 @@ export class PrismaBookingRepository implements BookingRepositoryPort {
       },
       orderBy: { id: "desc" },
       take: limit,
+    });
+    return rows.map(toEntity);
+  }
+
+  async assignDriver(tx: TxClient, input: AssignDriverInput): Promise<BookingEntity | null> {
+    const result = await tx.booking.updateMany({
+      where: {
+        id: input.id,
+        version: input.fromVersion,
+        status: "CONFIRMED",
+        deletedAt: null,
+      },
+      data: {
+        status: "DRIVER_ASSIGNED",
+        driverId: input.driverId,
+        vehicleId: input.vehicleId,
+        driverAssignedAt: input.assignedAt,
+        dispatchAttempts: input.dispatchAttempts,
+        lastDispatchAt: input.assignedAt,
+        dispatchFailedReason: null,
+        version: { increment: 1 },
+      },
+    });
+    if (result.count === 0) return null;
+    const updated = await tx.booking.findFirst({
+      where: { id: input.id, deletedAt: null },
+    });
+    return updated ? toEntity(updated) : null;
+  }
+
+  async reassignDriver(tx: TxClient, input: AssignDriverInput): Promise<BookingEntity | null> {
+    const result = await tx.booking.updateMany({
+      where: {
+        id: input.id,
+        version: input.fromVersion,
+        status: "DRIVER_ASSIGNED",
+        deletedAt: null,
+      },
+      data: {
+        // status stays DRIVER_ASSIGNED — see port comment for rationale.
+        driverId: input.driverId,
+        vehicleId: input.vehicleId,
+        driverAssignedAt: input.assignedAt,
+        dispatchAttempts: input.dispatchAttempts,
+        lastDispatchAt: input.assignedAt,
+        dispatchFailedReason: null,
+        version: { increment: 1 },
+      },
+    });
+    if (result.count === 0) return null;
+    const updated = await tx.booking.findFirst({
+      where: { id: input.id, deletedAt: null },
+    });
+    return updated ? toEntity(updated) : null;
+  }
+
+  async recordDispatchFailure(tx: TxClient, input: DispatchMetadataInput): Promise<boolean> {
+    const result = await tx.booking.updateMany({
+      where: { id: input.id, version: input.fromVersion, deletedAt: null },
+      data: {
+        dispatchAttempts: input.dispatchAttempts,
+        lastDispatchAt: input.lastDispatchAt,
+        dispatchFailedReason: input.dispatchFailedReason,
+        version: { increment: 1 },
+      },
+    });
+    return result.count > 0;
+  }
+
+  async findDispatchable(tx: TxClient, input: FindDispatchableInput): Promise<BookingEntity[]> {
+    const cooldownCutoff = new Date(input.now.getTime() - input.cooldownMs);
+    const rows = await tx.booking.findMany({
+      where: {
+        status: "CONFIRMED",
+        deletedAt: null,
+        dispatchAttempts: { lt: input.maxAttempts },
+        OR: [{ lastDispatchAt: null }, { lastDispatchAt: { lt: cooldownCutoff } }],
+      },
+      orderBy: { createdAt: "asc" },
+      take: input.limit ?? 20,
     });
     return rows.map(toEntity);
   }

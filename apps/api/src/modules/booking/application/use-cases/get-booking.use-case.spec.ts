@@ -59,6 +59,10 @@ function build(stored: BookingEntity | null) {
     transitionStatus: vi.fn(),
     expireDraftsOlderThan: vi.fn(),
     listForCustomer: vi.fn(),
+    assignDriver: vi.fn(),
+    reassignDriver: vi.fn(),
+    recordDispatchFailure: vi.fn(),
+    findDispatchable: vi.fn(),
   };
   return new GetBookingUseCase(repo, new FakeTxRunner());
 }
