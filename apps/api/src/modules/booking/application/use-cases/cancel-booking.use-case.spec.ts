@@ -50,6 +50,9 @@ function buildBooking(overrides: Partial<BookingEntity> = {}): BookingEntity {
     cancelledByUserId: null,
     driverId: null,
     vehicleId: null,
+    dispatchAttempts: 0,
+    lastDispatchAt: null,
+    dispatchFailedReason: null,
     version: 0,
     createdAt: new Date("2026-08-14T10:00:00.000Z"),
     updatedAt: new Date("2026-08-14T10:00:00.000Z"),
@@ -82,6 +85,10 @@ function buildHarness(initial: Partial<BookingEntity> = {}) {
     }),
     expireDraftsOlderThan: vi.fn(),
     listForCustomer: vi.fn(),
+    assignDriver: vi.fn(),
+    reassignDriver: vi.fn(),
+    recordDispatchFailure: vi.fn(),
+    findDispatchable: vi.fn(),
   };
 
   const outbox: OutboxWriterPort = { write: vi.fn(async () => undefined) };

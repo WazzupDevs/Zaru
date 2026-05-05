@@ -17,10 +17,18 @@ export class PrismaVehicleAvailabilityRepository implements VehicleAvailabilityR
         startAt: input.startAt,
         endAt: input.endAt,
         type: input.type,
+        ...(input.bookingId !== undefined ? { bookingId: input.bookingId } : {}),
         ...(input.reason !== undefined ? { reason: input.reason } : {}),
       },
     });
     return toRecord(row);
+  }
+
+  async findBookedForBooking(tx: TxClient, bookingId: string): Promise<AvailabilityRecord | null> {
+    const row = await tx.vehicleAvailability.findFirst({
+      where: { bookingId, type: "BOOKED", deletedAt: null },
+    });
+    return row ? toRecord(row) : null;
   }
 
   async findActiveById(tx: TxClient, id: string): Promise<AvailabilityRecord | null> {

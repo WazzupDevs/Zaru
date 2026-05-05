@@ -1,4 +1,5 @@
 import { Injectable } from "@nestjs/common";
+import { Prisma } from "@prisma/client";
 
 import type { DriverOnboardingStatus } from "@event-fleet/shared-types";
 
@@ -77,6 +78,30 @@ export class PrismaDriverProfileRepository implements DriverProfileRepositoryPor
         version: { increment: 1 },
       },
     });
+  }
+
+  async updateLocation(
+    tx: TxClient,
+    driverProfileId: string,
+    input: { lat: string | number; lng: string | number; updatedAt: Date },
+  ): Promise<boolean> {
+    const result = await tx.driverProfile.updateMany({
+      where: { id: driverProfileId, deletedAt: null },
+      data: {
+        lastKnownLat: new Prisma.Decimal(input.lat),
+        lastKnownLng: new Prisma.Decimal(input.lng),
+        lastLocationUpdate: input.updatedAt,
+      },
+    });
+    return result.count > 0;
+  }
+
+  async setOnline(tx: TxClient, driverProfileId: string, isOnline: boolean): Promise<boolean> {
+    const result = await tx.driverProfile.updateMany({
+      where: { id: driverProfileId, deletedAt: null },
+      data: { isOnline },
+    });
+    return result.count > 0;
   }
 
   async listPending(

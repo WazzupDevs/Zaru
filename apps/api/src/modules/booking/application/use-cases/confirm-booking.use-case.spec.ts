@@ -114,6 +114,9 @@ function buildHarness() {
         cancelledByUserId: null,
         driverId: null,
         vehicleId: null,
+        dispatchAttempts: 0,
+        lastDispatchAt: null,
+        dispatchFailedReason: null,
         version: 0,
         createdAt: NOW,
         updatedAt: NOW,
@@ -125,6 +128,10 @@ function buildHarness() {
     transitionStatus: vi.fn(),
     expireDraftsOlderThan: vi.fn(),
     listForCustomer: vi.fn(),
+    assignDriver: vi.fn(),
+    reassignDriver: vi.fn(),
+    recordDispatchFailure: vi.fn(),
+    findDispatchable: vi.fn(),
   };
 
   class FakeTxRunner implements TxRunnerPort {

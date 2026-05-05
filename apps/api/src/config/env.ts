@@ -57,6 +57,28 @@ export const envSchema = z.object({
   GOOGLE_MAPS_RATE_LIMIT_PER_SECOND: z.coerce.number().int().positive().default(10),
   // Quote TTL (15 minutes by default). ADR 0017.
   PRICE_QUOTE_TTL_SECONDS: z.coerce.number().int().positive().default(900),
+
+  // --- Dispatch / Driver matching (A4c) — ADR 0020 ---
+  // Driver search radius. PostGIS ST_DWithin works in metres internally;
+  // we configure km here for ergonomics.
+  DISPATCH_MAX_RADIUS_KM: z.coerce.number().positive().default(25),
+  // Drivers below this rating are filtered out before scoring. New drivers
+  // default to ratingAverage = 5.0 so they qualify until they rack up reviews.
+  DISPATCH_MIN_RATING: z.coerce.number().min(0).max(5).default(4.0),
+  // Score = distanceWeight * (1 - dist/maxRadius) + ratingWeight * (rating/5).
+  // Weights should sum to 1.0; we tolerate non-1.0 sums for experimentation.
+  DISPATCH_DISTANCE_WEIGHT: z.coerce.number().min(0).max(1).default(0.7),
+  DISPATCH_RATING_WEIGHT: z.coerce.number().min(0).max(1).default(0.3),
+  // Max attempts before a booking is escalated to manual-review (worker
+  // emits dispatch.DispatchFailed with requiresManualReview=true).
+  DISPATCH_MAX_ATTEMPTS: z.coerce.number().int().positive().default(3),
+  // Cooldown between consecutive worker attempts on the same booking.
+  DISPATCH_RETRY_COOLDOWN_MS: z.coerce.number().int().positive().default(60_000),
+  // Worker tick — every 30 s by default.
+  DISPATCH_WORKER_INTERVAL_MS: z.coerce.number().int().positive().default(30_000),
+  // Driver location is considered stale after this many seconds (matcher
+  // filters drivers whose lastLocationUpdate is older).
+  DISPATCH_LOCATION_FRESHNESS_SECONDS: z.coerce.number().int().positive().default(300),
 });
 
 export type Env = z.infer<typeof envSchema>;

@@ -62,4 +62,20 @@ export interface DriverProfileRepositoryPort {
     tx: TxClient,
     args: { limit: number; cursor?: string | undefined },
   ): Promise<{ items: DriverProfileRecord[]; nextCursor: string | null }>;
+  /**
+   * Atomic location + freshness write. The driver app (A4f) calls this on
+   * every position update; smoke scripts and the admin test endpoint use
+   * it to seed fixtures. Returns true on success, false if the row was
+   * not found / soft-deleted.
+   */
+  updateLocation(
+    tx: TxClient,
+    driverProfileId: string,
+    input: { lat: string | number; lng: string | number; updatedAt: Date },
+  ): Promise<boolean>;
+  /**
+   * Toggle online/offline. Driver app sets this when going on/off shift.
+   * Returns true on success, false if not found.
+   */
+  setOnline(tx: TxClient, driverProfileId: string, isOnline: boolean): Promise<boolean>;
 }

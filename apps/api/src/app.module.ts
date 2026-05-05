@@ -23,6 +23,7 @@ import { StorageModule } from "./common/storage/storage.module";
 import { type Env, validateEnv } from "./config/env";
 import { BookingModule } from "./modules/booking/booking.module";
 import { CatalogModule } from "./modules/catalog/catalog.module";
+import { DispatchModule } from "./modules/dispatch/dispatch.module";
 import { IdentityModule } from "./modules/identity/identity.module";
 import { PricingModule } from "./modules/pricing/pricing.module";
 import { SupplyModule } from "./modules/supply/supply.module";
@@ -56,6 +57,7 @@ import { SupplyModule } from "./modules/supply/supply.module";
     SupplyModule,
     PricingModule,
     BookingModule,
+    DispatchModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: DomainExceptionFilter },

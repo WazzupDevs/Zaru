@@ -71,5 +71,12 @@ import { VehicleController } from "./interface/controllers/vehicle.controller";
       useClass: PrismaVehicleAvailabilityRepository,
     },
   ],
+  // Exported so cross-module callers (e.g. Dispatch) can inject the repos
+  // without re-wiring Prisma. Same disipline as BookingModule exports.
+  exports: [
+    DRIVER_PROFILE_REPOSITORY_PORT,
+    VEHICLE_REPOSITORY_PORT,
+    VEHICLE_AVAILABILITY_REPOSITORY_PORT,
+  ],
 })
 export class SupplyModule {}

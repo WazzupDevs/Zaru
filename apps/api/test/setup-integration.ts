@@ -88,6 +88,14 @@ export async function setup(): Promise<void> {
   process.env.GOOGLE_MAPS_API_KEY ??= "AIzaSy_DUMMY_TEST_FIXED_KEY_FOR_INTEGRATION";
   process.env.GOOGLE_MAPS_RATE_LIMIT_PER_SECOND ??= "10";
   process.env.PRICE_QUOTE_TTL_SECONDS ??= "900";
+  process.env.DISPATCH_MAX_RADIUS_KM ??= "25";
+  process.env.DISPATCH_MIN_RATING ??= "4.0";
+  process.env.DISPATCH_DISTANCE_WEIGHT ??= "0.7";
+  process.env.DISPATCH_RATING_WEIGHT ??= "0.3";
+  process.env.DISPATCH_MAX_ATTEMPTS ??= "3";
+  process.env.DISPATCH_RETRY_COOLDOWN_MS ??= "60000";
+  process.env.DISPATCH_WORKER_INTERVAL_MS ??= "30000";
+  process.env.DISPATCH_LOCATION_FRESHNESS_SECONDS ??= "300";
 
   // Bootstrap the test bucket + open anonymous download (so publicUrl works
   // in tests just like dev does via mc).
