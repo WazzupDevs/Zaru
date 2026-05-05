@@ -135,7 +135,10 @@ describe("Pricing quote (Testcontainers)", () => {
     }
     const eleventh = await sendOne();
     expect(eleventh.status).toBe(429);
-    expect(eleventh.body.code).toBe("PRICING_QUOTE_RATE_LIMITED");
+    // Production code raises PricingRateLimitedError → "PRICING_RATE_LIMITED".
+    // The pricing module shares one rate-limit error class across endpoints
+    // (admin, addon, etc.), so the prefix stays generic.
+    expect(eleventh.body.code).toBe("PRICING_RATE_LIMITED");
   });
 
   it("pricing.PriceQuoteCreated outbox payload carries no PII", async () => {

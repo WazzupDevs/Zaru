@@ -118,7 +118,11 @@ describe("Booking lifecycle (Testcontainers)", () => {
       .set("Authorization", `Bearer ${token}`)
       .send({ quoteId: quote.id });
 
-    expect(res.status).toBe(410);
+    // RFC 7231: 410 Gone is for permanent removal; an expired quote is
+    // a current-state mismatch (caller can ask for a fresh quote), so
+    // the API returns 409 Conflict. The error code is the durable
+    // contract clients pin against.
+    expect(res.status).toBe(409);
     expect(res.body.code).toBe("PRICING_QUOTE_EXPIRED");
   });
 

@@ -9,17 +9,16 @@ import { signAccessTokenFor } from "./helpers/auth-token";
 import { configureApp } from "../src/configure-app";
 import { setupCatalogFixtures, setupPricingFixtures } from "./helpers/catalog-fixtures";
 import { truncateTransactionalTables } from "./helpers/db-cleanup";
+import { drainAndProcess } from "./helpers/drain-and-process";
 import { buildDriver } from "./helpers/driver-builder";
 import { buildQuote } from "./helpers/quote-builder";
 import { buildUser } from "./helpers/user-builder";
-import { OutboxDrainService } from "../src/common/outbox/outbox-drain.service";
 import { PrismaService } from "../src/common/prisma/prisma.service";
 import { AssignDriverToBookingUseCase } from "../src/modules/dispatch/application/use-cases/assign-driver-to-booking.use-case";
 import {
   SMS_SENDER_PORT,
   type SmsSenderPort,
 } from "../src/modules/notifications/application/ports/sms-sender.port";
-import { SendNotificationUseCase } from "../src/modules/notifications/application/use-cases/send-notification.use-case";
 import { MockSmsSender } from "../src/modules/notifications/infrastructure/senders/mock-sms-sender";
 
 /**
@@ -31,10 +30,8 @@ import { MockSmsSender } from "../src/modules/notifications/infrastructure/sende
 describe("Full booking lifecycle (e2e)", () => {
   let app: NestExpressApplication;
   let prisma: PrismaService;
-  let drain: OutboxDrainService;
   let mockSms: MockSmsSender;
   let assignUseCase: AssignDriverToBookingUseCase;
-  let sendNotification: SendNotificationUseCase;
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
@@ -43,9 +40,7 @@ describe("Full booking lifecycle (e2e)", () => {
     configureApp(app);
     await app.init();
     prisma = app.get(PrismaService);
-    drain = app.get(OutboxDrainService);
     assignUseCase = app.get(AssignDriverToBookingUseCase);
-    sendNotification = app.get(SendNotificationUseCase);
     const sender = app.get<SmsSenderPort>(SMS_SENDER_PORT);
     if (!(sender instanceof MockSmsSender)) {
       throw new Error("e2e expects MockSmsSender");
@@ -63,23 +58,8 @@ describe("Full booking lifecycle (e2e)", () => {
     mockSms.clearFailure();
   });
 
-  async function drainAndProcess(): Promise<void> {
-    for (let i = 0; i < 5; i++) {
-      const processed = await drain.drainOnce();
-      if (processed === 0) break;
-    }
-    const pending = await prisma.client.notification.findMany({
-      where: { status: "PENDING" },
-      select: { id: true },
-    });
-    for (const n of pending) {
-      try {
-        await sendNotification.execute({ notificationId: n.id, attemptNumber: 1 });
-      } catch {
-        /* swallow — DLQ scenarios live in their own spec */
-      }
-    }
-  }
+  /** Shared deterministic loop — see test/helpers/drain-and-process.ts. */
+  const flush = (): Promise<void> => drainAndProcess(app, { swallowNotificationErrors: true });
 
   it("customer journey: login → quote → confirm → dispatch → cancel — every event surfaces an SMS", async () => {
     // 1. Catalog + pricing seed (idempotent helpers).
@@ -111,7 +91,7 @@ describe("Full booking lifecycle (e2e)", () => {
     expect(confirmRes.status).toBe(201);
     const bookingId = confirmRes.body.id as string;
 
-    await drainAndProcess();
+    await flush();
     const confirmSms = mockSms.getLastFor(customer.phoneE164);
     expect(confirmSms?.message).toContain("rezervasyonunuz onaylandı");
 
@@ -120,7 +100,7 @@ describe("Full booking lifecycle (e2e)", () => {
     expect(dispatchResult.success).toBe(true);
     expect(dispatchResult.driverProfileId).toBe(driver.driverProfileId);
 
-    await drainAndProcess();
+    await flush();
     expect(mockSms.getLastFor(driver.user.phoneE164)?.message).toContain("Yeni iş");
     expect(mockSms.getLastFor(customer.phoneE164)?.message).toMatch(/sürücünüz atandı/i);
 
@@ -135,7 +115,7 @@ describe("Full booking lifecycle (e2e)", () => {
       .send({ reason: "test cancel" });
     expect(cancelRes.status).toBe(201);
 
-    await drainAndProcess();
+    await flush();
     expect(mockSms.getLastFor(customer.phoneE164)?.message).toContain("iptal edildi");
 
     const finalBooking = await prisma.client.booking.findUnique({

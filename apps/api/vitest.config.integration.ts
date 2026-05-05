@@ -27,5 +27,12 @@ export default defineConfig({
     // Single-threaded: containers + migrations are stateful per run.
     pool: "forks",
     poolOptions: { forks: { singleFork: true } },
+    // Run integration spec files sequentially. Each spec boots its own
+    // AppModule and that module starts background workers (outbox drain,
+    // booking expiry, dispatch, idempotency cleanup). Two spec files
+    // boot in parallel would compete for AccessExclusiveLock during the
+    // TRUNCATE in beforeEach and deadlock on Postgres.
+    fileParallelism: false,
+    sequence: { concurrent: false },
   },
 });

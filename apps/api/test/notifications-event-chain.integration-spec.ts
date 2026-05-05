@@ -7,6 +7,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { AppModule } from "../src/app.module";
 import { signAccessTokenFor } from "./helpers/auth-token";
 import { setupCatalogFixtures, setupPricingFixtures } from "./helpers/catalog-fixtures";
+import { drainAndProcess } from "./helpers/drain-and-process";
 import { OutboxDrainService } from "../src/common/outbox/outbox-drain.service";
 import { PrismaService } from "../src/common/prisma/prisma.service";
 import { configureApp } from "../src/configure-app";
@@ -38,7 +39,6 @@ import { MockSmsSender } from "../src/modules/notifications/infrastructure/sende
 describe("Notifications event chain (Testcontainers)", () => {
   let app: NestExpressApplication;
   let prisma: PrismaService;
-  let drain: OutboxDrainService;
   let mockSms: MockSmsSender;
   let sendUseCase: SendNotificationUseCase;
   let deadLetterUseCase: DeadLetterNotificationUseCase;
@@ -53,7 +53,6 @@ describe("Notifications event chain (Testcontainers)", () => {
     configureApp(app);
     await app.init();
     prisma = app.get(PrismaService);
-    drain = app.get(OutboxDrainService);
     sendUseCase = app.get(SendNotificationUseCase);
     deadLetterUseCase = app.get(DeadLetterNotificationUseCase);
     assignUseCase = app.get(AssignDriverToBookingUseCase);
@@ -78,28 +77,27 @@ describe("Notifications event chain (Testcontainers)", () => {
     mockSms.clearFailure();
   });
 
-  /** Drain outbox until empty (max 10 passes — guards against runaway loops). */
-  async function drainAll(): Promise<void> {
-    for (let i = 0; i < 10; i++) {
-      const processed = await drain.drainOnce();
-      if (processed === 0) return;
-    }
-  }
+  /** Shared deterministic loop — drain outbox + send PENDING notifications until idle. */
+  const flush = (): Promise<void> => drainAndProcess(app, { swallowNotificationErrors: true });
 
-  /** Process all PENDING notifications by directly invoking the use case. */
-  async function processPendingNotifications(): Promise<void> {
-    const pending = await prisma.client.notification.findMany({
-      where: { status: "PENDING" },
-      select: { id: true },
-    });
-    for (const n of pending) {
-      try {
-        await sendUseCase.execute({ notificationId: n.id, attemptNumber: 1 });
-      } catch {
-        // Swallow — failed-attempt path. Tests that need DLQ call
-        // deadLetterUseCase explicitly after exhausting attempts.
-      }
+  /**
+   * Drain outbox without invoking SendNotificationUseCase, then poll
+   * until the listener-created PENDING notification row materialises.
+   * Used by retry / DLQ tests that need to call sendUseCase themselves
+   * with a controlled attempt counter.
+   */
+  async function waitForPendingNotification(sourceAggregateId: string): Promise<{ id: string }> {
+    const drain = app.get(OutboxDrainService);
+    for (let attempt = 0; attempt < 50; attempt++) {
+      await drain.drainOnce();
+      const row = await prisma.client.notification.findFirst({
+        where: { sourceAggregateId },
+        select: { id: true },
+      });
+      if (row) return row;
+      await new Promise((resolve) => setTimeout(resolve, 50));
     }
+    throw new Error(`no notification appeared for ${sourceAggregateId} within 2.5s`);
   }
 
   async function aConfirmedBooking() {
@@ -116,8 +114,7 @@ describe("Notifications event chain (Testcontainers)", () => {
   it("BookingConfirmed → customer SMS lands in MockSmsSender inbox as SENT", async () => {
     const { customer, bookingId } = await aConfirmedBooking();
 
-    await drainAll();
-    await processPendingNotifications();
+    await flush();
 
     const last = mockSms.getLastFor(customer.phoneE164);
     expect(last).toBeDefined();
@@ -132,16 +129,15 @@ describe("Notifications event chain (Testcontainers)", () => {
 
   it("BookingCancelled → customer SMS BOOKING_CANCELLED", async () => {
     const { customer, token, bookingId } = await aConfirmedBooking();
-    await drainAll();
-    await processPendingNotifications();
+    await flush();
+
     mockSms.clear();
 
     await request(app.getHttpServer())
       .post(`/bookings/${bookingId}/cancel`)
       .set("Authorization", `Bearer ${token}`)
       .send({ reason: "test" });
-    await drainAll();
-    await processPendingNotifications();
+    await flush();
 
     const last = mockSms.getLastFor(customer.phoneE164);
     expect(last?.message).toContain("iptal edildi");
@@ -158,13 +154,12 @@ describe("Notifications event chain (Testcontainers)", () => {
       lng: 28.98,
     });
     const { customer, bookingId } = await aConfirmedBooking();
-    await drainAll();
-    await processPendingNotifications();
+    await flush();
+
     mockSms.clear();
 
     await assignUseCase.execute({ bookingId });
-    await drainAll();
-    await processPendingNotifications();
+    await flush();
 
     const driverSms = mockSms.getLastFor(driver.user.phoneE164);
     expect(driverSms?.message).toContain("Yeni iş");
@@ -182,19 +177,22 @@ describe("Notifications event chain (Testcontainers)", () => {
 
   it("idempotency: replaying a BookingConfirmed event produces only one notification (24h window)", async () => {
     const { customer, bookingId } = await aConfirmedBooking();
-    await drainAll();
-    await processPendingNotifications();
+    await flush();
+
     const initial = await prisma.client.notification.count({
       where: { sourceAggregateId: bookingId, kind: "BOOKING_CONFIRMED" },
     });
     expect(initial).toBe(1);
 
-    // Manually replay the same outbox event — simulates a drain retry.
+    // Manually replay the BookingCreated event the listener actually
+    // subscribes to (BookingConfirmed is the lifecycle marker; the
+    // listener feeds off Created so the payload carries totalAmount +
+    // event window). Simulates an outbox drain retry.
     await prisma.client.outboxEvent.create({
       data: {
         aggregateType: "Booking",
         aggregateId: bookingId,
-        eventType: "booking.BookingConfirmed",
+        eventType: "booking.BookingCreated",
         payload: {
           bookingId,
           customerId: customer.id,
@@ -203,11 +201,11 @@ describe("Notifications event chain (Testcontainers)", () => {
           totalAmount: "6877.00",
           currency: "TRY",
           eventStartAt: "2026-08-15T14:00:00.000Z",
+          eventEndAt: "2026-08-15T22:00:00.000Z",
         } as never,
       },
     });
-    await drainAll();
-    await processPendingNotifications();
+    await flush();
 
     const after = await prisma.client.notification.count({
       where: { sourceAggregateId: bookingId, kind: "BOOKING_CONFIRMED" },
@@ -216,14 +214,13 @@ describe("Notifications event chain (Testcontainers)", () => {
   });
 
   it("retry happy path: first 2 attempts fail, 3rd succeeds → status SENT, attemptHistory has 2 entries", async () => {
-    const { bookingId } = await aConfirmedBooking();
-    await drainAll();
-
-    // Two failures then a success.
+    // Set the failure window FIRST so the eventual flush() in the chain
+    // hits the simulated failure. Calling flush before failNext would
+    // process the notification SENT immediately and the retry path would
+    // never run.
     mockSms.failNext(2);
-    const pending = await prisma.client.notification.findFirstOrThrow({
-      where: { sourceAggregateId: bookingId, kind: "BOOKING_CONFIRMED" },
-    });
+    const { bookingId } = await aConfirmedBooking();
+    const pending = await waitForPendingNotification(bookingId);
 
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
@@ -242,9 +239,13 @@ describe("Notifications event chain (Testcontainers)", () => {
   });
 
   it("DLQ: every attempt fails → DeadLetterNotificationUseCase materialises dead_letters row + outbox event", async () => {
-    const { bookingId } = await aConfirmedBooking();
-    await drainAll();
+    // Set the failure mode FIRST so the notification cannot land SENT
+    // before we get a chance to exhaust the retry budget (same trick
+    // as the retry happy path test above).
     mockSms.failAll();
+    const { bookingId } = await aConfirmedBooking();
+    const pendingFromBooking = await waitForPendingNotification(bookingId);
+    void pendingFromBooking;
     const pending = await prisma.client.notification.findFirstOrThrow({
       where: { sourceAggregateId: bookingId, kind: "BOOKING_CONFIRMED" },
     });
