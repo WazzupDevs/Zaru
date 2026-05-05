@@ -1,3 +1,4 @@
+import { BullModule } from "@nestjs/bullmq";
 import { Module } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { getLoggerToken, PinoLogger } from "nestjs-pino";
@@ -19,6 +20,10 @@ import { MockDistanceCalculator } from "./infrastructure/distance/mock-distance-
 import { PrismaPriceQuoteRepository } from "./infrastructure/persistence/prisma-price-quote.repository";
 import { PrismaPricingProfileRepository } from "./infrastructure/persistence/prisma-pricing-profile.repository";
 import { PrismaPricingRuleRepository } from "./infrastructure/persistence/prisma-pricing-rule.repository";
+import { PRICE_QUOTE_CLEANUP_QUEUE_NAME } from "./infrastructure/workers/price-quote-cleanup.constants";
+import { PriceQuoteCleanupScheduler } from "./infrastructure/workers/price-quote-cleanup.scheduler";
+import { PriceQuoteCleanupService } from "./infrastructure/workers/price-quote-cleanup.service";
+import { PriceQuoteCleanupWorker } from "./infrastructure/workers/price-quote-cleanup.worker";
 import { AdminPricingController } from "./interface/controllers/admin-pricing.controller";
 import { PricingController } from "./interface/controllers/pricing.controller";
 
@@ -28,10 +33,14 @@ import type { DistanceCalculatorPort } from "./application/ports/distance-calcul
 const GOOGLE_MAPS_LOGGER_TOKEN = getLoggerToken(GoogleMapsDistanceCalculator.name);
 
 @Module({
+  imports: [BullModule.registerQueue({ name: PRICE_QUOTE_CLEANUP_QUEUE_NAME })],
   controllers: [PricingController, AdminPricingController],
   providers: [
     PricingCalculator,
     RuleEvaluator,
+    PriceQuoteCleanupService,
+    PriceQuoteCleanupWorker,
+    PriceQuoteCleanupScheduler,
     { provide: PRICING_PROFILE_REPOSITORY_PORT, useClass: PrismaPricingProfileRepository },
     { provide: PRICING_RULE_REPOSITORY_PORT, useClass: PrismaPricingRuleRepository },
     { provide: PRICE_QUOTE_REPOSITORY_PORT, useClass: PrismaPriceQuoteRepository },

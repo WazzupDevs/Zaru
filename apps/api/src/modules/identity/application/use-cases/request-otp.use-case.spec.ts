@@ -10,6 +10,7 @@ import type {
   OtpRequestRepositoryPort,
 } from "../ports/otp-request.repository.port";
 import type { SmsSenderPort } from "../ports/sms-sender.port";
+import type { TestOtpCachePort } from "../ports/test-otp-cache.port";
 
 const FIXED_NOW = new Date("2026-04-23T10:00:00.000Z");
 
@@ -34,9 +35,14 @@ function buildHarness() {
   const clock = new FrozenClock(FIXED_NOW);
   // Real in-memory limiter — exercises the same contract as Redis impl.
   const rateLimiter = new InMemoryRateLimiter(() => FIXED_NOW.getTime());
+  const testOtpCache: TestOtpCachePort = {
+    record: vi.fn(),
+    getLast: vi.fn(() => null),
+    reset: vi.fn(),
+  };
 
-  const useCase = new RequestOtpUseCase(repo, sms, clock, rateLimiter);
-  return { useCase, repo, sms, clock, rateLimiter };
+  const useCase = new RequestOtpUseCase(repo, sms, clock, rateLimiter, testOtpCache);
+  return { useCase, repo, sms, clock, rateLimiter, testOtpCache };
 }
 
 describe("RequestOtpUseCase", () => {
@@ -108,5 +114,19 @@ describe("RequestOtpUseCase", () => {
     const createArg = vi.mocked(repo.createWithOutbox).mock.calls[0]![0];
     expect(createArg.codeHash.length).toBeGreaterThan(20);
     expect(createArg.codeHash).toMatch(/^\$argon2/);
+  });
+
+  it("records the plaintext code into the test-only cache", async () => {
+    const { useCase, testOtpCache, sms } = buildHarness();
+    await useCase.execute({ phone: "+905551234567", ipAddress: "1.2.3.4" });
+
+    expect(testOtpCache.record).toHaveBeenCalledOnce();
+    const [phoneArg, codeArg] = vi.mocked(testOtpCache.record).mock.calls[0]!;
+    expect(phoneArg).toBe("+905551234567");
+    expect(codeArg).toMatch(/^\d{6}$/);
+
+    // The cached code matches what was put into the SMS body.
+    const smsBody = vi.mocked(sms.send).mock.calls[0]![0].body;
+    expect(smsBody).toContain(codeArg);
   });
 });

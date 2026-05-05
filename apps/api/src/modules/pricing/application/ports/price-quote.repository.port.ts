@@ -61,4 +61,10 @@ export interface PriceQuoteRepositoryPort {
    * already expired, or concurrently mutated. Used by booking creation.
    */
   consumeQuote(tx: TxClient, id: string, bookingId: string, now: Date): Promise<PriceQuoteEntity>;
+  /**
+   * Bulk ACTIVE → EXPIRED for rows whose expiresAt is past `now`. Returns
+   * the affected entities so the caller can emit one outbox event per row.
+   * Used by the cleanup worker.
+   */
+  expireOlderThan(tx: TxClient, now: Date): Promise<PriceQuoteEntity[]>;
 }

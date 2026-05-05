@@ -41,9 +41,10 @@ model User {
   updatedAt       DateTime  @updatedAt @map("updated_at")
   deletedAt       DateTime? @map("deleted_at")
 
-  refreshTokens RefreshToken[]
-  driverProfile DriverProfile?
-  bookings      Booking[]
+  refreshTokens     RefreshToken[]
+  driverProfile     DriverProfile?
+  bookings          Booking[]      @relation("BookingCustomer")
+  cancelledBookings Booking[]      @relation("BookingCancelledBy")
 
   @@index([phoneE164])
   @@map("users")
@@ -155,6 +156,7 @@ model ServiceCategory {
   attributeDefs CategoryAttributeDefinition[]
   pricingRules  PricingRule[]
   priceQuotes   PriceQuote[]
+  bookings      Booking[]
 
   @@index([isActive, sortOrder])
   @@map("service_categories")
@@ -178,6 +180,7 @@ model VehicleType {
   pricingProfile PricingProfile?
   pricingRules   PricingRule[]
   priceQuotes    PriceQuote[]
+  bookings       Booking[]
 
   @@unique([categoryId, slug])
   @@index([categoryId, isActive, sortOrder])
@@ -261,6 +264,7 @@ model DriverProfile {
   vehicles         Vehicle[]
   documents        Document[]
   availabilities   VehicleAvailability[]
+  bookings         Booking[]
 
   @@index([status])
   @@index([nationalIdHash])
@@ -295,6 +299,7 @@ model Vehicle {
   driverProfile   DriverProfile         @relation(fields: [driverProfileId], references: [id])
   vehicleType     VehicleType           @relation(fields: [vehicleTypeId], references: [id])
   availabilities  VehicleAvailability[]
+  bookings        Booking[]
 
   @@index([driverProfileId])
   @@index([status])
@@ -480,15 +485,26 @@ model PriceQuote {
 }
 
 // =====================================================================
-// Booking (A4a skeleton — A4b will add state machine and the rest of the
-// columns: pickup snapshot, driver assignment, payment refs, audit).
-// For A4a we only need the row to exist so PriceQuote.consumedByBookingId
-// has a target and the FK round-trip is testable.
+// Booking (A4b) — full lifecycle aggregate. State transitions are guarded
+// by BookingStateMachine in the domain layer; the DB enum is the storage
+// contract, the state machine is the rulebook. See ADR 0019.
+//
+// Snapshot pattern: when ConfirmBooking consumes the quote, all pricing /
+// pickup / dropoff fields are copied here. Later edits to the quote (or
+// to PricingRule rows) do NOT mutate live bookings — immutable price
+// guarantee from ADR 0017.
 // =====================================================================
 
 enum BookingStatus {
-  DRAFT
-  // CONFIRMED, DRIVER_ASSIGNED, IN_PROGRESS, COMPLETED, CANCELLED in A4b
+  DRAFT // quote consumed, awaiting payment confirmation (A4c) — bypassed in A4b
+  CONFIRMED // customer confirmed; awaiting dispatch
+  DRIVER_ASSIGNED // dispatch assigned a driver (A4d)
+  IN_PROGRESS // event window started
+  COMPLETED // driver marked done
+  CANCELLED_BY_CUSTOMER // customer (or admin acting on behalf) cancelled
+  CANCELLED_BY_DRIVER // driver declined or cancelled
+  EXPIRED // DRAFT TTL elapsed without confirmation
+  DISPUTED // (Phase 3+) escalated to manual review
 }
 
 model Booking {
@@ -496,12 +512,53 @@ model Booking {
   customerId   String        @map("customer_id") @db.Uuid
   priceQuoteId String        @unique @map("price_quote_id") @db.Uuid
   status       BookingStatus @default(DRAFT)
-  createdAt    DateTime      @default(now()) @map("created_at")
-  updatedAt    DateTime      @updatedAt @map("updated_at")
-  version      Int           @default(0)
-  customer     User          @relation(fields: [customerId], references: [id])
-  priceQuote   PriceQuote    @relation(fields: [priceQuoteId], references: [id])
+
+  // Quote snapshot — frozen at confirm time (immutable price guarantee).
+  vehicleTypeId  String   @map("vehicle_type_id") @db.Uuid
+  categoryId     String   @map("category_id") @db.Uuid
+  pickupLat      Decimal  @map("pickup_lat") @db.Decimal(10, 7)
+  pickupLng      Decimal  @map("pickup_lng") @db.Decimal(10, 7)
+  pickupAddress  String   @map("pickup_address")
+  dropoffLat     Decimal  @map("dropoff_lat") @db.Decimal(10, 7)
+  dropoffLng     Decimal  @map("dropoff_lng") @db.Decimal(10, 7)
+  dropoffAddress String   @map("dropoff_address")
+  eventStartAt   DateTime @map("event_start_at")
+  eventEndAt     DateTime @map("event_end_at")
+  totalAmount    Decimal  @map("total_amount") @db.Decimal(10, 2)
+  currency       String   @default("TRY")
+
+  // Lifecycle audit timestamps. Populated as the state machine advances.
+  confirmedAt      DateTime? @map("confirmed_at")
+  driverAssignedAt DateTime? @map("driver_assigned_at")
+  startedAt        DateTime? @map("started_at")
+  completedAt      DateTime? @map("completed_at")
+  cancelledAt      DateTime? @map("cancelled_at")
+  expiredAt        DateTime? @map("expired_at")
+
+  // Cancellation context.
+  cancellationReason String? @map("cancellation_reason")
+  cancelledByUserId  String? @map("cancelled_by_user_id") @db.Uuid
+
+  // Driver / vehicle assignment (A4d).
+  driverId  String? @map("driver_id") @db.Uuid
+  vehicleId String? @map("vehicle_id") @db.Uuid
+
+  version   Int       @default(0)
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  customer        User            @relation("BookingCustomer", fields: [customerId], references: [id])
+  cancelledByUser User?           @relation("BookingCancelledBy", fields: [cancelledByUserId], references: [id])
+  driver          DriverProfile?  @relation(fields: [driverId], references: [id])
+  vehicle         Vehicle?        @relation(fields: [vehicleId], references: [id])
+  priceQuote      PriceQuote      @relation(fields: [priceQuoteId], references: [id])
+  vehicleType     VehicleType     @relation(fields: [vehicleTypeId], references: [id])
+  category        ServiceCategory @relation(fields: [categoryId], references: [id])
 
   @@index([customerId, status])
+  @@index([status, eventStartAt])
+  @@index([driverId, status])
+  @@index([eventStartAt])
   @@map("bookings")
 }

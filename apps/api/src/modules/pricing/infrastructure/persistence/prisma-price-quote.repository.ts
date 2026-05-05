@@ -82,6 +82,28 @@ export class PrismaPriceQuoteRepository implements PriceQuoteRepositoryPort {
     if (!updated) throw new QuoteNotFoundError();
     return toEntity(updated);
   }
+
+  async expireOlderThan(tx: TxClient, now: Date): Promise<PriceQuoteEntity[]> {
+    const candidates = await tx.priceQuote.findMany({
+      where: { status: "ACTIVE", expiresAt: { lte: now } },
+      select: { id: true },
+      take: 500,
+    });
+    if (candidates.length === 0) return [];
+
+    const expired: PriceQuoteEntity[] = [];
+    for (const c of candidates) {
+      const result = await tx.priceQuote.updateMany({
+        where: { id: c.id, status: "ACTIVE" },
+        data: { status: "EXPIRED" },
+      });
+      if (result.count === 1) {
+        const row = await tx.priceQuote.findUnique({ where: { id: c.id } });
+        if (row) expired.push(toEntity(row));
+      }
+    }
+    return expired;
+  }
 }
 
 function toEntity(
