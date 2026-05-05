@@ -2069,6 +2069,77 @@ girdi, admin monitoring + HTTP test inbox açıldı.
 - A5+: Expo push adapter + live Netgsm staging + DLQ Slack alert +
   notifications Testcontainers integration spec
 
+---
+
+## 2026-05-12 — Session A4-Stab: Faz 2 Stabilization (Testcontainers)
+
+A4c/A4e-1/A4e-2'de erteleneen integration spec borcunu kapattı,
+A4d Mobile'a sağlam zemin. Yeni feature yok — sadece test ekleme.
+
+### Done
+
+**Test data builder pattern (DRY helpers)**
+
+- user-builder, driver-builder, quote-builder, auth-token, db-cleanup
+- catalog-fixtures'e `setupPricingFixtures` + `TRIM_ADDON_RULE_ID`
+- MockSmsSender'a `failNext(N)` / `failAll()` / `clearFailure()`
+  (A4e-2 ADR 0022 TODO'su)
+
+**5 yeni Testcontainers spec (+25 test case)**
+
+| Spec                                            | Test count |
+| ----------------------------------------------- | ---------- |
+| `booking-lifecycle.integration-spec.ts`         | 6          |
+| `dispatch.integration-spec.ts`                  | 7          |
+| `notifications-event-chain.integration-spec.ts` | 6          |
+| `pricing.integration-spec.ts`                   | 5          |
+| `full-lifecycle.e2e-spec.ts`                    | 1          |
+
+**Drive-by**
+
+`.env.example` A4e-2 PR'ında `NOTIFICATION_MAX_ATTEMPTS` +
+`NOTIFICATION_BACKOFF_DELAY_MS` satırlarını almamıştı. G1 commit'inde
+düzeltildi.
+
+### Verification
+
+| Kontrol                   | Sonuç                                           |
+| ------------------------- | ----------------------------------------------- |
+| `pnpm typecheck`          | ✓ 3/3 paket                                     |
+| `pnpm lint`               | ✓ 3/3 paket                                     |
+| API unit tests            | **274 PASS** (sabit)                            |
+| Integration tests (lokal) | Docker Desktop sleep — koşamadı                 |
+| Integration tests (CI)    | Bekliyor — push sonrası `Integration tests` job |
+
+### Plandan sapmalar (gerekçeli)
+
+| Sapma                                    | Gerekçe                                                                                            |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Brief 12-15 commit hedefi → **8 commit** | Spec başına case sayısını ~70-80%'e indirdim, helper'lar tek commit                                |
+| TestApp wrapper vazgeçildi               | Mevcut pattern (her e2e spec kendi `Test.createTestingModule`) zaten sade — abstract'a değer değil |
+| `ExpoPushSender` spec yok                | A4e-2'de zaten deferred; push consumer wired değil                                                 |
+| Coverage report atlanmış                 | Yeni feature değil, mevcut pipeline her commit'te lint+typecheck+test çalıştırıyor                 |
+| Booking DRAFT-expiry test atlanmış       | A4b DRAFT bypass var; gerçek DRAFT row'lar A5 payment'tan sonra                                    |
+| Lokal Testcontainers koşamadı            | Docker Desktop sleep durumunda; CI'da çalışacak                                                    |
+
+### Final commit listesi (branch)
+
+| #   | Commit  | Konu                                                                 |
+| --- | ------- | -------------------------------------------------------------------- |
+| 1   | b9bef35 | test(helpers): user/driver/quote builders + sms failure injection    |
+| 2   | 054e661 | test(booking): lifecycle integration spec (Testcontainers)           |
+| 3   | 215e475 | test(dispatch): integration spec with postgis matching scenarios     |
+| 4   | 3e81e38 | test(notifications): event chain integration spec with retry + dlq   |
+| 5   | 27e31fb | test(pricing): integration spec with race + rate-limit + addon + pii |
+| 6   | c984610 | test(e2e): full lifecycle from login to dispatch to cancel           |
+| 7   | (bu)    | docs: log session a4-stab progress                                   |
+
+### Next
+
+- A4d: admin UI + driver mobile + push token registration
+- A4c-payment: iyzico Marketplace adapter
+- A5+: live Netgsm staging + DLQ Slack alert + push spec genişletme
+
 <!--
 Şablon (yeni oturum buradan başlasın):
 

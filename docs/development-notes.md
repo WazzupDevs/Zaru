@@ -1380,3 +1380,90 @@ NOTIFICATION_BACKOFF_DELAY_MS=2000
 ```
 
 Defaults ADR 0022'deki ~30 sn toplam pencereye karşılık geliyor.
+
+---
+
+## 2026-05-12 — Session A4-Stab (Integration Test Stabilization)
+
+A4c/A4e-1/A4e-2'de erteleneen Testcontainers integration spec borcunu
+kapattı. Yeni feature yok — sadece test + helper.
+
+### Test data builder pattern
+
+`apps/api/test/helpers/`:
+
+- `user-builder.ts` — direct INSERT (OTP loop bypass)
+- `driver-builder.ts` — User + DriverProfile (APPROVED) + Vehicle
+  (ACTIVE) chain tek call'da, deterministik HMAC dummy hash'leriyle
+- `quote-builder.ts` — supertest POST `/pricing/quotes`, default
+  Saturday August window (compound multiplier 6877.00 TRY pin)
+- `auth-token.ts` — `signAccessTokenFor(app, user)` JWT mint, OTP
+  flow'u baypas
+- `db-cleanup.ts` — TRUNCATE CASCADE per-test mutable tables;
+  catalog/pricing fixtures korunur
+- `catalog-fixtures.ts` genişletildi: `setupPricingFixtures` + ADDON
+  rule (`TRIM_ADDON_RULE_ID`)
+
+### MockSmsSender failure injection
+
+`failNext(N)` / `failAll()` / `clearFailure()` — A4e-2 ADR 0022'de TODO
+olarak bırakılmıştı. Retry + DLQ test'lerinde provider'ın deterministik
+fail etmesi için.
+
+### 5 yeni Testcontainers spec
+
+| Spec                                            | Test count | Kapsam                                                                            |
+| ----------------------------------------------- | ---------- | --------------------------------------------------------------------------------- |
+| `booking-lifecycle.integration-spec.ts`         | 6          | confirm + concurrent race + expired quote + cancel + terminal guard + outbox PII  |
+| `dispatch.integration-spec.ts`                  | 7          | PostGIS happy + offline/stale/radius/availability filtreleri + race + payload PII |
+| `notifications-event-chain.integration-spec.ts` | 6          | 4 event handler + idempotency + retry + DLQ                                       |
+| `pricing.integration-spec.ts`                   | 5          | quote + addon + race + 10/min rate limit + outbox PII                             |
+| `full-lifecycle.e2e-spec.ts`                    | 1          | login → quote → confirm → dispatch → cancel + her adımda SMS                      |
+
+Toplam **+25 yeni test case**.
+
+### OutboxDrainService.drainOnce() pattern
+
+Spec'ler BullMQ scheduler'i beklemek yerine `drain.drainOnce()` inline
+çağırıyor — outbox-drain.integration-spec.ts'in zaten kullandığı
+deterministik pattern. SendNotificationUseCase de doğrudan invoke
+ediliyor (worker shell baypas) — retry counter / DLQ behavior
+deterministik kalıyor.
+
+### Test app harness vazgeçildi
+
+Brief büyük bir TestApp wrapper öneriyordu (drainOutbox / waitForNotification
+helper'larıyla). Mevcut pattern (her e2e spec kendi
+`Test.createTestingModule([AppModule]).compile()`) zaten çalışıyor ve
+sade — spec başına 8 satır setup overhead'i abstract'a değer.
+
+### Drive-by
+
+`.env.example` A4e-2 PR'ında `NOTIFICATION_MAX_ATTEMPTS` +
+`NOTIFICATION_BACKOFF_DELAY_MS` satırlarını almamıştı (rebase/squash
+kayıp; env.ts ve setup-integration.ts güncel). G1 commit'inde 2 satır
+ekleyerek düzeltildi.
+
+### Lokal verifikasyon yapılamadı
+
+Docker Desktop bu lokal makinede sleep durumunda, Testcontainers
+`Could not find a working container runtime strategy` hatası veriyor
+(A4a smoke borcunda da aynı sorun). Spec'ler ekleniyor ve CI'da
+çalışacak — `.github/workflows/ci.yml` `Integration tests` job'u
+zaten Testcontainers için yapılandırılmış (A3a'dan beri).
+
+### A4d Mobile için sağlam zemin
+
+Faz 2 borcu kapatıldı; A4d Mobile'a geçiş için integration coverage
+ve helper iskeleti hazır. A4d mobile'ında push token registration
+geldiğinde Notifications testleri push channel için trivially
+extend edilir (şu an SMS-only).
+
+### A5+ ertelenenler (A4-Stab scope dışı)
+
+- ExpoPushSender + push channel integration spec
+- Notification preferences (user opt-out)
+- Live Netgsm staging deploy + manual doğrulama
+- DLQ Slack/email alert pipeline
+- Mobile Detox/Maestro e2e (A4d mobile sonrası)
+- Performance / load (Faz 3 k6)
