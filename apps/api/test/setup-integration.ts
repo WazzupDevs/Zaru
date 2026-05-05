@@ -75,6 +75,8 @@ export async function setup(): Promise<void> {
   process.env.NETGSM_USERCODE ??= "DUMMY_TEST_USERCODE";
   process.env.NETGSM_PASSWORD ??= "DUMMY_TEST_PASSWORD";
   process.env.NETGSM_SENDER ??= "EVENTFLEET";
+  process.env.NOTIFICATION_MAX_ATTEMPTS ??= "5";
+  process.env.NOTIFICATION_BACKOFF_DELAY_MS ??= "2000";
   // PII hashing: deterministic dummy is fine for tests; real secret only in dev/prod.
   process.env.PII_HMAC_SECRET ??= "2".repeat(64);
   // Storage env: pointed at the test MinIO container. Bucket created below.

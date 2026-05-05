@@ -1,26 +1,19 @@
-import { Inject, Injectable } from "@nestjs/common";
+import { Injectable } from "@nestjs/common";
 import { OnEvent } from "@nestjs/event-emitter";
 import { InjectPinoLogger, PinoLogger } from "nestjs-pino";
 
-import { TX_RUNNER_PORT, type TxRunnerPort } from "../../../../common/persistence/tx-runner.port";
-import {
-  USER_REPOSITORY_PORT,
-  type UserRepositoryPort,
-} from "../../../identity/application/ports/user.repository.port";
+import { NotificationContextProvider } from "../services/notification-context.provider";
 import { QueueNotificationUseCase } from "../use-cases/queue-notification.use-case";
 
 /**
  * In-process bridge from outbox events (drained by OutboxScheduler →
- * EventEmitter2.emitAsync) to the notifications queue. The booking and
- * dispatch modules never know notifications exist; they just write the
- * outbox row. This listener does the cross-module read of the
- * recipient's phone via UserRepositoryPort (Identity), keeping the
- * outbox payload itself PII-free (ADR 0019, A4b discipline).
+ * EventEmitter2.emitAsync) to the notifications queue. Booking and
+ * dispatch modules never know notifications exist; they just write
+ * the outbox row.
  *
- * Driver-side notifications need the driver's user id resolved from the
- * driverProfileId in the dispatch event payload. We do that with a
- * second lookup — the matching SQL touches a different table so the
- * tx cost is negligible at our volume.
+ * Recipient phones are resolved via NotificationContextProvider —
+ * keeps outbox payloads PII-free (ADR 0019, A4b discipline) and
+ * concentrates cross-module reads in one tested service (A4e-2).
  *
  * Faz 3+ multi-instance API: in-process listener won't fan out across
  * pods. ADR 0021 revisit trigger.
@@ -28,8 +21,7 @@ import { QueueNotificationUseCase } from "../use-cases/queue-notification.use-ca
 @Injectable()
 export class OutboxNotificationListener {
   constructor(
-    @Inject(USER_REPOSITORY_PORT) private readonly userRepo: UserRepositoryPort,
-    @Inject(TX_RUNNER_PORT) private readonly tx: TxRunnerPort,
+    private readonly contextProvider: NotificationContextProvider,
     private readonly queueNotification: QueueNotificationUseCase,
     @InjectPinoLogger(OutboxNotificationListener.name)
     private readonly logger: PinoLogger,
@@ -45,23 +37,24 @@ export class OutboxNotificationListener {
     currency: string;
     eventStartAt: string;
   }): Promise<void> {
-    const customer = await this.tx.run((tx) =>
-      this.userRepo.findActiveById(tx, payload.customerId),
-    );
+    const customer = await this.contextProvider.getCustomerContext(payload.customerId);
     if (!customer) {
-      this.logger.warn({ customerId: payload.customerId }, "skip notification: customer not found");
+      this.logger.warn(
+        { bookingId: payload.bookingId, customerId: payload.customerId },
+        "skip BookingConfirmed notification: customer not found",
+      );
       return;
     }
     await this.queueNotification.execute({
       channel: "SMS",
       kind: "BOOKING_CONFIRMED",
-      recipientUserId: customer.id,
+      recipientUserId: customer.userId,
       recipientPhone: customer.phoneE164,
       templateKey: "booking.confirmed",
       locale: "tr",
       variables: {
         customerName: customer.displayName ?? "Müşterimiz",
-        bookingShortId: payload.bookingId.slice(0, 8),
+        bookingShortId: payload.bookingId.slice(0, 8).toUpperCase(),
         eventDate: this.formatTrDate(new Date(payload.eventStartAt)),
         totalAmount: payload.totalAmount,
       },
@@ -78,36 +71,30 @@ export class OutboxNotificationListener {
     previousStatus: string;
     cancelledAt: string;
   }): Promise<void> {
-    // The cancel event tells us who pressed the button, but the SMS
-    // recipient is always the booking customer. We need a second hop to
-    // get there: read the booking via Prisma directly (cheap since we're
-    // already in a tx). For now, read by aggregate id from the payload
-    // and assume the cancelled-by user is also the customer for the
-    // CUSTOMER role; admin cancellations carry the cancelled-by-admin
-    // tag and we still want the CUSTOMER to be notified — A4e-2 will
-    // grow a BookingRepository read here. For A4e-1 we ship the
-    // cancelled-by-customer happy path which is the dominant case.
-    if (payload.cancelledByRole !== "CUSTOMER") {
-      this.logger.debug(
-        { bookingId: payload.bookingId, role: payload.cancelledByRole },
-        "skip cancel notification: only CUSTOMER cancels surface SMS in A4e-1",
+    // Customer is the booking owner. Even ADMIN-initiated cancels need
+    // to reach the customer — we read the booking to find them rather
+    // than trusting cancelledByUserId (which is admin id for admin path).
+    void payload.cancelledByRole;
+    const booking = await this.contextProvider.getBookingContext(payload.bookingId);
+    if (!booking) {
+      this.logger.warn(
+        { bookingId: payload.bookingId },
+        "skip BookingCancelled notification: booking not found",
       );
       return;
     }
-    const customer = await this.tx.run((tx) =>
-      this.userRepo.findActiveById(tx, payload.cancelledByUserId),
-    );
+    const customer = await this.contextProvider.getCustomerContext(booking.customerId);
     if (!customer) return;
     await this.queueNotification.execute({
       channel: "SMS",
       kind: "BOOKING_CANCELLED",
-      recipientUserId: customer.id,
+      recipientUserId: customer.userId,
       recipientPhone: customer.phoneE164,
       templateKey: "booking.cancelled",
       locale: "tr",
       variables: {
         customerName: customer.displayName ?? "Müşterimiz",
-        bookingShortId: payload.bookingId.slice(0, 8),
+        bookingShortId: booking.bookingShortId,
       },
       sourceEventType: "booking.BookingCancelled",
       sourceAggregateId: payload.bookingId,
@@ -115,18 +102,35 @@ export class OutboxNotificationListener {
   }
 
   @OnEvent("booking.BookingExpired", { async: true })
-  onBookingExpired(payload: { bookingId: string; expiredAt: string }): void {
-    // Expired events come from the worker — they don't carry the
-    // customer id. A4e-2 will read the Booking row to resolve the
-    // customer; A4e-1 logs and skips so we don't fail loudly.
-    this.logger.debug(
-      { bookingId: payload.bookingId },
-      "BookingExpired notification deferred to A4e-2 (needs booking lookup)",
-    );
+  async onBookingExpired(payload: { bookingId: string; expiredAt: string }): Promise<void> {
+    const booking = await this.contextProvider.getBookingContext(payload.bookingId);
+    if (!booking) {
+      this.logger.warn(
+        { bookingId: payload.bookingId },
+        "skip BookingExpired notification: booking not found",
+      );
+      return;
+    }
+    const customer = await this.contextProvider.getCustomerContext(booking.customerId);
+    if (!customer) return;
+    await this.queueNotification.execute({
+      channel: "SMS",
+      kind: "BOOKING_EXPIRED",
+      recipientUserId: customer.userId,
+      recipientPhone: customer.phoneE164,
+      templateKey: "booking.expired",
+      locale: "tr",
+      variables: {
+        customerName: customer.displayName ?? "Müşterimiz",
+        bookingShortId: booking.bookingShortId,
+      },
+      sourceEventType: "booking.BookingExpired",
+      sourceAggregateId: payload.bookingId,
+    });
   }
 
   @OnEvent("dispatch.DriverDispatched", { async: true })
-  onDriverDispatched(payload: {
+  async onDriverDispatched(payload: {
     bookingId: string;
     driverProfileId: string;
     vehicleId: string;
@@ -134,17 +138,58 @@ export class OutboxNotificationListener {
     score: number;
     attempts: number;
     dispatchedAt: string;
-  }): void {
-    // Driver SMS — needs driver_profile → user → phone resolution.
-    // For A4e-1 we log the intent; A4e-2 will wire the driver
-    // repository read once Notifications imports SupplyModule.
-    this.logger.info(
-      {
-        bookingId: payload.bookingId,
-        driverProfileId: payload.driverProfileId,
+  }): Promise<void> {
+    const booking = await this.contextProvider.getBookingContext(payload.bookingId);
+    if (!booking) {
+      this.logger.warn(
+        { bookingId: payload.bookingId },
+        "skip DriverDispatched notifications: booking not found",
+      );
+      return;
+    }
+    const driver = await this.contextProvider.getDriverContext(payload.driverProfileId);
+    if (!driver) {
+      this.logger.warn(
+        { driverProfileId: payload.driverProfileId },
+        "skip DriverDispatched notifications: driver not found",
+      );
+      return;
+    }
+    const customer = await this.contextProvider.getCustomerContext(booking.customerId);
+    if (!customer) return;
+
+    // Two SMS — different recipientPhone, different kind: idempotency
+    // window does not collide (ADR 0021).
+    await this.queueNotification.execute({
+      channel: "SMS",
+      kind: "NEW_BOOKING_OFFER",
+      recipientUserId: driver.userId,
+      recipientPhone: driver.phoneE164,
+      templateKey: "dispatch.new_offer",
+      locale: "tr",
+      variables: {
+        eventDate: this.formatTrDate(booking.eventStartAt),
+        totalAmount: booking.totalAmount,
+        bookingShortId: booking.bookingShortId,
       },
-      "dispatch.DriverDispatched observed — driver SMS deferred to A4e-2",
-    );
+      sourceEventType: "dispatch.DriverDispatched",
+      sourceAggregateId: payload.bookingId,
+    });
+
+    await this.queueNotification.execute({
+      channel: "SMS",
+      kind: "DRIVER_ASSIGNED_TO_BOOKING",
+      recipientUserId: customer.userId,
+      recipientPhone: customer.phoneE164,
+      templateKey: "booking.driver_assigned",
+      locale: "tr",
+      variables: {
+        customerName: customer.displayName ?? "Müşterimiz",
+        bookingShortId: booking.bookingShortId,
+      },
+      sourceEventType: "dispatch.DriverDispatched",
+      sourceAggregateId: payload.bookingId,
+    });
   }
 
   private formatTrDate(date: Date): string {

@@ -30,6 +30,10 @@ export const envSchema = z.object({
     .string()
     .regex(/^[A-Z0-9]{1,11}$/)
     .default("EVENTFLEET"),
+  // Retry policy (ADR 0022). 5 attempts × exponential backoff = ~13 min
+  // total before dead-lettering.
+  NOTIFICATION_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(5),
+  NOTIFICATION_BACKOFF_DELAY_MS: z.coerce.number().int().positive().default(2_000),
 
   SENTRY_DSN: z.string().url().optional(),
 

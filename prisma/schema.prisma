@@ -181,6 +181,9 @@ model Notification {
   providerMessageId String?            @map("provider_message_id")
   providerError     String?            @map("provider_error")
   retryCount        Int                @default(0) @map("retry_count")
+  // A4e-2: per-attempt journal so the admin can see why a row dead-lettered
+  // without trawling logs. Shape: [{ attempt: 1, error: "...", attemptedAt: "ISO" }].
+  attemptHistory    Json               @default("[]") @map("attempt_history")
 
   sourceEventType   String? @map("source_event_type")
   sourceAggregateId String? @map("source_aggregate_id") @db.Uuid
@@ -190,6 +193,8 @@ model Notification {
   deliveredAt DateTime? @map("delivered_at")
   failedAt    DateTime? @map("failed_at")
 
+  deadLetter NotificationDeadLetter?
+
   @@index([recipientUserId, createdAt])
   @@index([status, createdAt])
   @@index([sourceAggregateId])
@@ -197,6 +202,43 @@ model Notification {
   // within a 24h window keyed by (sourceAggregateId, kind, recipientPhone).
   @@index([sourceAggregateId, kind, recipientPhone, createdAt])
   @@map("notifications")
+}
+
+// Dead Letter Queue — terminal failure records (A4e-2). The notification
+// row itself transitions to DEAD_LETTERED, but its mutable fields are
+// snapshotted here so investigators see the body + error history that
+// triggered the dead-lettering even if the source row is later edited.
+// ADR 0022 — retry strategy.
+model NotificationDeadLetter {
+  id             String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  notificationId String @unique @map("notification_id") @db.Uuid
+
+  // Snapshot at dead-letter time.
+  channel        NotificationChannel
+  kind           NotificationKind
+  recipientPhone String              @map("recipient_phone")
+  renderedBody   String              @map("rendered_body")
+
+  finalError     String   @map("final_error")
+  attempts       Int
+  firstAttemptAt DateTime @map("first_attempt_at")
+  lastAttemptAt  DateTime @map("last_attempt_at")
+  deadLetteredAt DateTime @default(now()) @map("dead_lettered_at")
+
+  // Per-attempt history snapshot (mirrors notification.attemptHistory at
+  // the moment of dead-lettering).
+  attemptHistory Json @map("attempt_history")
+
+  // Investigation audit (admin endpoint sets these).
+  investigatedAt       DateTime? @map("investigated_at")
+  investigatedByUserId String?   @map("investigated_by_user_id") @db.Uuid
+  resolution           String?
+
+  notification Notification @relation(fields: [notificationId], references: [id])
+
+  @@index([deadLetteredAt])
+  @@index([investigatedAt])
+  @@map("notification_dead_letters")
 }
 
 // =====================================================================

@@ -1,5 +1,6 @@
 import { InjectQueue } from "@nestjs/bullmq";
 import { Inject, Injectable } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { Queue } from "bullmq";
 
 import { CLOCK_PORT, type ClockPort } from "../../../../common/clock/clock.port";
@@ -11,6 +12,7 @@ import {
 } from "../ports/notification.repository.port";
 import { TEMPLATE_RENDERER_PORT, type TemplateRendererPort } from "../ports/template-renderer.port";
 
+import type { Env } from "../../../../config/env";
 import type {
   NotificationEntity,
   NotificationChannel,
@@ -39,6 +41,9 @@ export interface QueueNotificationInput {
  */
 @Injectable()
 export class QueueNotificationUseCase {
+  private readonly maxAttempts: number;
+  private readonly backoffDelayMs: number;
+
   constructor(
     @Inject(NOTIFICATION_REPOSITORY_PORT)
     private readonly repo: NotificationRepositoryPort,
@@ -47,7 +52,11 @@ export class QueueNotificationUseCase {
     @Inject(TX_RUNNER_PORT) private readonly tx: TxRunnerPort,
     @Inject(CLOCK_PORT) private readonly clock: ClockPort,
     @InjectQueue(NOTIFICATION_QUEUE_NAME) private readonly queue: Queue,
-  ) {}
+    config: ConfigService<Env, true>,
+  ) {
+    this.maxAttempts = config.get("NOTIFICATION_MAX_ATTEMPTS", { infer: true });
+    this.backoffDelayMs = config.get("NOTIFICATION_BACKOFF_DELAY_MS", { infer: true });
+  }
 
   async execute(input: QueueNotificationInput): Promise<NotificationEntity> {
     const renderedBody = await this.renderer.render(
@@ -96,8 +105,14 @@ export class QueueNotificationUseCase {
         {
           jobId: `notification-${notification.id}`,
           removeOnComplete: { count: 100 },
-          removeOnFail: { count: 100 },
-          attempts: 1, // A4e-2: bump to 5 with exponential backoff + DLQ
+          // Keep failed jobs around — admin can replay and the worker
+          // dead-letters on the final attempt (ADR 0022).
+          removeOnFail: false,
+          attempts: this.maxAttempts,
+          backoff: {
+            type: "exponential",
+            delay: this.backoffDelayMs,
+          },
         },
       );
     }
