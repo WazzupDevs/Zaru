@@ -153,4 +153,23 @@ export async function setupPricingFixtures(
     },
     update: { isActive: true },
   });
+
+  // Optional ADDON — pricing integration spec opts customers in.
+  const trimAddonId = "33333333-3333-4333-8333-333333333333";
+  await prisma.pricingRule.upsert({
+    where: { id: trimAddonId },
+    create: {
+      id: trimAddonId,
+      type: "ADDON",
+      name: "Düğün Süslemesi",
+      description: "Çelenk, gelin tülü ve dış süsleme",
+      fixedAmount: "500.00",
+      isOptional: true,
+      sortOrder: 30,
+    },
+    update: { isActive: true },
+  });
 }
+
+/** Stable id of the trim addon seeded by setupPricingFixtures. */
+export const TRIM_ADDON_RULE_ID = "33333333-3333-4333-8333-333333333333";
