@@ -15,6 +15,12 @@ import {
 import { SMS_SENDER_PORT, type SmsSenderPort } from "./application/ports/sms-sender.port";
 import { TEMPLATE_RENDERER_PORT } from "./application/ports/template-renderer.port";
 import { NotificationContextProvider } from "./application/services/notification-context.provider";
+import {
+  ListDeadLettersUseCase,
+  ListNotificationsUseCase,
+  MarkDeadLetterInvestigatedUseCase,
+  RetryNotificationUseCase,
+} from "./application/use-cases/admin-notification.use-cases";
 import { DeadLetterNotificationUseCase } from "./application/use-cases/dead-letter-notification.use-case";
 import { QueueNotificationUseCase } from "./application/use-cases/queue-notification.use-case";
 import { SendNotificationUseCase } from "./application/use-cases/send-notification.use-case";
@@ -24,6 +30,7 @@ import { MockSmsSender } from "./infrastructure/senders/mock-sms-sender";
 import { NetgsmSmsSender } from "./infrastructure/senders/netgsm-sms-sender";
 import { TemplateRenderer } from "./infrastructure/templates/template-renderer";
 import { NotificationWorker } from "./infrastructure/workers/notification.worker";
+import { AdminNotificationsController } from "./interface/controllers/admin-notifications.controller";
 import { NotificationsTestController } from "./interface/controllers/notifications-test.controller";
 
 const isProduction = process.env.NODE_ENV === "production";
@@ -57,7 +64,10 @@ const MOCK_LOGGER_TOKEN = getLoggerToken(MockSmsSender.name);
     SupplyModule,
     BullModule.registerQueue({ name: NOTIFICATION_QUEUE_NAME }),
   ],
-  controllers: isProduction ? [] : [NotificationsTestController],
+  controllers: [
+    AdminNotificationsController,
+    ...(isProduction ? [] : [NotificationsTestController]),
+  ],
   providers: [
     TemplateRenderer,
     { provide: TEMPLATE_RENDERER_PORT, useExisting: TemplateRenderer },
@@ -87,6 +97,10 @@ const MOCK_LOGGER_TOKEN = getLoggerToken(MockSmsSender.name);
     },
     QueueNotificationUseCase,
     SendNotificationUseCase,
+    ListNotificationsUseCase,
+    RetryNotificationUseCase,
+    ListDeadLettersUseCase,
+    MarkDeadLetterInvestigatedUseCase,
     OutboxNotificationListener,
     NotificationWorker,
   ],
