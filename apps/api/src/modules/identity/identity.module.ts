@@ -48,6 +48,9 @@ const isProduction = process.env.NODE_ENV === "production";
     { provide: SMS_SENDER_PORT, useClass: SmsSenderClass },
     { provide: TEST_OTP_CACHE_PORT, useClass: TestOtpCacheClass },
   ],
-  exports: [JWT_TOKEN_SERVICE_PORT],
+  // Notifications module imports IdentityModule to call
+  // UserRepositoryPort.findActiveById from its outbox listener — keeps
+  // outbox event payloads PII-free (no phone in the payload).
+  exports: [JWT_TOKEN_SERVICE_PORT, USER_REPOSITORY_PORT],
 })
 export class IdentityModule {}
