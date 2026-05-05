@@ -9,7 +9,7 @@ import { setupCatalogFixtures } from "./helpers/catalog-fixtures";
 import { PrismaService } from "../src/common/prisma/prisma.service";
 import { RedisService } from "../src/common/redis/redis.service";
 import { configureApp } from "../src/configure-app";
-import { MockSmsSender } from "../src/modules/identity/infrastructure/sms/mock-sms-sender";
+import { MockSmsSender } from "../src/modules/notifications/infrastructure/senders/mock-sms-sender";
 
 const OTP_CODE_REGEX = /(\d{6})/;
 const VALID_TCKN = "11111111110";

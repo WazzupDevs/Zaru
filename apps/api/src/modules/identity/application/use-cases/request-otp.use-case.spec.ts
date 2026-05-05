@@ -6,10 +6,14 @@ import { InMemoryRateLimiter } from "../../../../../test/fakes/in-memory-rate-li
 import { InvalidPhoneError } from "../../domain/errors/invalid-phone.error";
 
 import type {
+  SmsSenderPort,
+  SmsSendResult,
+} from "../../../notifications/application/ports/sms-sender.port";
+import type { TemplateRendererPort } from "../../../notifications/application/ports/template-renderer.port";
+import type {
   OtpRequestRecord,
   OtpRequestRepositoryPort,
 } from "../ports/otp-request.repository.port";
-import type { SmsSenderPort } from "../ports/sms-sender.port";
 import type { TestOtpCachePort } from "../ports/test-otp-cache.port";
 
 const FIXED_NOW = new Date("2026-04-23T10:00:00.000Z");
@@ -31,7 +35,15 @@ function buildHarness() {
     incrementAttempt: vi.fn(async () => 1),
     consume: vi.fn(async () => undefined),
   };
-  const sms: SmsSenderPort = { send: vi.fn(async () => undefined) };
+  const sms: SmsSenderPort = {
+    send: vi.fn(
+      async () =>
+        ({
+          providerMessageId: "mock-mid",
+          sentAt: FIXED_NOW,
+        }) satisfies SmsSendResult,
+    ),
+  };
   const clock = new FrozenClock(FIXED_NOW);
   // Real in-memory limiter — exercises the same contract as Redis impl.
   const rateLimiter = new InMemoryRateLimiter(() => FIXED_NOW.getTime());
@@ -40,9 +52,14 @@ function buildHarness() {
     getLast: vi.fn(() => null),
     reset: vi.fn(),
   };
+  const templates: TemplateRendererPort = {
+    render: vi.fn(async (_key, _locale, vars) =>
+      Promise.resolve(`Event Fleet doğrulama kodunuz: ${String(vars.code)}.`),
+    ),
+  };
 
-  const useCase = new RequestOtpUseCase(repo, sms, clock, rateLimiter, testOtpCache);
-  return { useCase, repo, sms, clock, rateLimiter, testOtpCache };
+  const useCase = new RequestOtpUseCase(repo, sms, clock, rateLimiter, testOtpCache, templates);
+  return { useCase, repo, sms, clock, rateLimiter, testOtpCache, templates };
 }
 
 describe("RequestOtpUseCase", () => {
@@ -72,8 +89,9 @@ describe("RequestOtpUseCase", () => {
 
     expect(sms.send).toHaveBeenCalledOnce();
     const smsArg = vi.mocked(sms.send).mock.calls[0]![0];
-    expect(smsArg.to).toBe("+905551234567");
-    expect(smsArg.body).toMatch(/\d{6}/);
+    expect(smsArg.phone).toBe("+905551234567");
+    expect(smsArg.message).toMatch(/\d{6}/);
+    expect(smsArg.sourceId).toBe("req-test-id");
   });
 
   it("throws InvalidPhoneError for non-TR-mobile numbers", async () => {
@@ -126,7 +144,7 @@ describe("RequestOtpUseCase", () => {
     expect(codeArg).toMatch(/^\d{6}$/);
 
     // The cached code matches what was put into the SMS body.
-    const smsBody = vi.mocked(sms.send).mock.calls[0]![0].body;
+    const smsBody = vi.mocked(sms.send).mock.calls[0]![0].message;
     expect(smsBody).toContain(codeArg);
   });
 });

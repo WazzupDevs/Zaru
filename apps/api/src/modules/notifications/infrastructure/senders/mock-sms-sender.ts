@@ -32,6 +32,13 @@ export interface MockSmsRecord {
 export class MockSmsSender implements SmsSenderPort {
   private readonly inbox: MockSmsRecord[] = [];
 
+  // Cross-instance test buffer. The factory in NotificationsModule
+  // produces fresh MockSmsSender instances per app boot, but e2e
+  // tests rely on a process-global view (the legacy A2c surface).
+  // Keep both: instance methods for clean DI inspection,
+  // static helpers for the e2e import path.
+  private static globalInbox: MockSmsRecord[] = [];
+
   constructor(
     @InjectPinoLogger(MockSmsSender.name)
     private readonly logger: PinoLogger,
@@ -40,13 +47,15 @@ export class MockSmsSender implements SmsSenderPort {
   send(input: SmsSendInput): Promise<SmsSendResult> {
     const providerMessageId = `mock-${randomUUID()}`;
     const sentAt = new Date();
-    this.inbox.push({
+    const record: MockSmsRecord = {
       phone: input.phone,
       message: input.message,
       sentAt,
       providerMessageId,
       sourceId: input.sourceId ?? null,
-    });
+    };
+    this.inbox.push(record);
+    MockSmsSender.globalInbox.push(record);
     this.logger.debug(
       {
         event: "mock_sms_sent",
@@ -76,5 +85,24 @@ export class MockSmsSender implements SmsSenderPort {
 
   clear(): void {
     this.inbox.length = 0;
+  }
+
+  // ---- Legacy A2c-compatible static surface (used by e2e tests) ----
+  // The old identity MockSmsSender exposed these. We preserve them so
+  // existing test fixtures keep working after the move; new tests
+  // should prefer the instance methods above (cleaner DI surface).
+  static _testOnlyGetLast(phone: string): { body: string; sentAt: Date } | undefined {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("MockSmsSender._testOnlyGetLast is not available in production");
+    }
+    for (let i = MockSmsSender.globalInbox.length - 1; i >= 0; i--) {
+      const r = MockSmsSender.globalInbox[i];
+      if (r?.phone === phone) return { body: r.message, sentAt: r.sentAt };
+    }
+    return undefined;
+  }
+
+  static _testOnlyReset(): void {
+    MockSmsSender.globalInbox = [];
   }
 }
