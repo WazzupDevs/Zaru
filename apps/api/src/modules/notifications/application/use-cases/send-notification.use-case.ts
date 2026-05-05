@@ -12,6 +12,8 @@ import { SMS_SENDER_PORT, type SmsSenderPort } from "../ports/sms-sender.port";
 
 export interface SendNotificationInput {
   notificationId: string;
+  /** 1-indexed; supplied by the worker so attemptHistory has accurate numbering. */
+  attemptNumber?: number;
 }
 
 /**
@@ -36,23 +38,30 @@ export class SendNotificationUseCase {
     const notification = await this.tx.run((tx) => this.repo.findById(tx, input.notificationId));
     if (!notification) throw new NotificationNotFoundError();
 
-    if (notification.status !== "PENDING") {
+    // Idempotent terminal-state guard: SENT/DEAD_LETTERED rows are no-ops.
+    // FAILED rows pass through — admin retry resets to PENDING (A4e-2).
+    if (notification.status === "SENT" || notification.status === "DEAD_LETTERED") {
       this.logger.debug(
         { notificationId: notification.id, status: notification.status },
-        "skipping non-PENDING notification",
+        "skipping terminal-status notification",
       );
       return;
     }
 
-    const claimed = await this.tx.run((tx) => this.repo.markSending(tx, notification.id));
-    if (!claimed) {
-      this.logger.debug(
-        { notificationId: notification.id },
-        "another worker took this notification first",
-      );
-      return;
+    // Atomic PENDING → SENDING. FAILED notifications skip this guard
+    // (they flow straight through to a retry attempt).
+    if (notification.status === "PENDING") {
+      const claimed = await this.tx.run((tx) => this.repo.markSending(tx, notification.id));
+      if (!claimed) {
+        this.logger.debug(
+          { notificationId: notification.id },
+          "another worker took this notification first",
+        );
+        return;
+      }
     }
 
+    const attemptedAt = this.clock.now();
     try {
       if (notification.channel !== "SMS") {
         throw new Error(`Channel ${notification.channel} is not wired in A4e-1`);
@@ -70,13 +79,19 @@ export class SendNotificationUseCase {
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      await this.tx.run((tx) =>
-        this.repo.markFailed(tx, notification.id, {
+      const attemptNumber = input.attemptNumber ?? notification.retryCount + 1;
+      await this.tx.run(async (tx) => {
+        await this.repo.appendAttempt(tx, notification.id, {
+          attempt: attemptNumber,
+          error: message,
+          attemptedAt: attemptedAt.toISOString(),
+        });
+        await this.repo.markFailed(tx, notification.id, {
           providerError: message,
-          failedAt: this.clock.now(),
-        }),
-      );
-      throw err; // BullMQ retry hook (A4e-2 will increase attempts)
+          failedAt: attemptedAt,
+        });
+      });
+      throw err; // BullMQ retry hook
     }
   }
 }

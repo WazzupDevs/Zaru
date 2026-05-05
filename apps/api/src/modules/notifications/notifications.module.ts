@@ -8,12 +8,17 @@ import { IdentityModule } from "../identity/identity.module";
 import { SupplyModule } from "../supply/supply.module";
 import { OutboxNotificationListener } from "./application/listeners/outbox-notification.listener";
 import { NOTIFICATION_QUEUE_NAME } from "./application/notification-queue.constants";
-import { NOTIFICATION_REPOSITORY_PORT } from "./application/ports/notification.repository.port";
+import {
+  NOTIFICATION_DEAD_LETTER_REPOSITORY_PORT,
+  NOTIFICATION_REPOSITORY_PORT,
+} from "./application/ports/notification.repository.port";
 import { SMS_SENDER_PORT, type SmsSenderPort } from "./application/ports/sms-sender.port";
 import { TEMPLATE_RENDERER_PORT } from "./application/ports/template-renderer.port";
 import { NotificationContextProvider } from "./application/services/notification-context.provider";
+import { DeadLetterNotificationUseCase } from "./application/use-cases/dead-letter-notification.use-case";
 import { QueueNotificationUseCase } from "./application/use-cases/queue-notification.use-case";
 import { SendNotificationUseCase } from "./application/use-cases/send-notification.use-case";
+import { PrismaNotificationDeadLetterRepository } from "./infrastructure/persistence/prisma-notification-dead-letter.repository";
 import { PrismaNotificationRepository } from "./infrastructure/persistence/prisma-notification.repository";
 import { MockSmsSender } from "./infrastructure/senders/mock-sms-sender";
 import { NetgsmSmsSender } from "./infrastructure/senders/netgsm-sms-sender";
@@ -53,7 +58,12 @@ const MOCK_LOGGER_TOKEN = getLoggerToken(MockSmsSender.name);
     TemplateRenderer,
     { provide: TEMPLATE_RENDERER_PORT, useExisting: TemplateRenderer },
     { provide: NOTIFICATION_REPOSITORY_PORT, useClass: PrismaNotificationRepository },
+    {
+      provide: NOTIFICATION_DEAD_LETTER_REPOSITORY_PORT,
+      useClass: PrismaNotificationDeadLetterRepository,
+    },
     NotificationContextProvider,
+    DeadLetterNotificationUseCase,
     MockSmsSender,
     NetgsmSmsSender,
     {
