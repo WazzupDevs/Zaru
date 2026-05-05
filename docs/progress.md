@@ -1843,6 +1843,145 @@ Yeni unit testler:
 - Payment (iyzico Marketplace) — A4c-payment (ayrı kapsam, A4b'den
   devredilen)
 
+---
+
+## 2026-05-09 — Session A4e-1: Notifications Infrastructure (SMS + Outbox Listener)
+
+A4c outbox event yazıyordu, A4e-1 tüketici zincirini kapattı.
+
+### Done
+
+**Schema + env**
+
+- `notifications` table + 3 enum (Channel/Status/Kind), 4 index
+  (compound idempotency key dahil)
+- 3 yeni env: `NETGSM_USERCODE/PASSWORD/SENDER` (DUMMY\_-prefixed
+  default → MockSmsSender'a düşer)
+- Migration `prisma migrate diff --script`'in spurious
+  `DROP COLUMN last_known_location` (PostGIS generated column)
+  satırı manuel çıkarıldı
+
+**Domain primitives**
+
+- `SmsSenderPort` + `TemplateRendererPort` + `NotificationRepositoryPort`
+- 5 domain error (`UnknownTemplateError`,
+  `TemplateVariableMissingError`, `NotificationSendFailedError`,
+  `NotificationNotFoundError`, `InvalidRecipientError`)
+- `NotificationEntity` + status/kind/channel re-exports
+
+**Templates (file-based + nest-cli assets)**
+
+- `TemplateRenderer` — `fs.readFile` + `{{var}}` regex + cache
+- 7 Türkçe template (identity.otp_request, booking.confirmed/cancelled/
+  expired/driver_assigned, dispatch.new_offer/booking_cancelled),
+  hepsi 160 karakter altında
+- `nest-cli.json` `assets` ile `.txt` dosyaları dist/'e kopyalanır
+- 6 unit test (render happy + UnknownTemplateError +
+  TemplateVariableMissingError + cache clear + 3 kritik template
+  variable smoke)
+
+**SMS adapters**
+
+- `MockSmsSender` — in-memory inbox + global static
+  `_testOnlyGetLast/_testOnlyReset` (legacy A2c e2e backwards-compat)
+- `NetgsmSmsSender` — axios POST `/sms/send/xml`, response
+  parsing (`00|01|02 <id>` success, başka kod → throw)
+- 7 unit test (Mock 3 + Netgsm 4: success/rejection/transport/alt-codes)
+- Factory env-driven: `DUMMY_USERCODE` → Mock
+
+**Use cases + worker (BullMQ)**
+
+- `QueueNotificationUseCase` — render + duplicate check + persist
+  PENDING + enqueue
+- `SendNotificationUseCase` — markSending atomic + sender.send +
+  markSent/markFailed
+- `NotificationWorker` (BullMQ Processor, concurrency 4)
+- Queue/job constants application/'da, infrastructure/ re-export
+  (cross-layer guard)
+
+**Outbox listener**
+
+- `OutboxNotificationListener` `@OnEvent` x4
+- 2 flow fully wired: `BookingConfirmed` + `BookingCancelled`
+  (customer-initiated only)
+- 2 flow observed + log + deferred: `BookingExpired` (no customerId
+  in payload) + `DriverDispatched` (driver phone resolution chain)
+- Cross-module read: `UserRepositoryPort` injected from Identity
+
+**Identity refactor (BREAKING, internal)**
+
+- 4 dosya silindi: local `SmsSenderPort + MockSmsSender +
+NetgsmSmsSender + PrimaryFallbackSmsSender`
+- `RequestOtpUseCase` artık shared `SmsSenderPort` +
+  `TemplateRenderer` (identity.otp_request) inject ediyor
+- Spec güncellendi (`smsArg.phone/message/sourceId`)
+- E2e test import path'leri sed ile fix
+- IdentityModule ↔ NotificationsModule circular dep `forwardRef()`
+
+**Wiring + observability**
+
+- `NotificationsModule` factory + global wiring
+- `AppModule` import'lara eklendi
+- Logger redact paths: `*.recipientPhone`, `*.renderedBody`
+- `IdentityModule` `USER_REPOSITORY_PORT` export
+
+**Smoke + canlı kanıt**
+
+- Smoke step 14 eklendi: `BOOKING_CONFIRMED` + `BOOKING_CANCELLED`
+  notifications status=SENT, ≤15s polling
+- Live API run: 3 notification SENT (DB query confirmed)
+- MockSmsSender inbox kayıt aldı, providerMessageId set
+- Log'da `recipientPhone` `[Redacted]` (pino redact verified)
+
+**ADR + docs**
+
+- `docs/adr/0021-notification-strategy.md` — in-process listener
+  - BullMQ + provider adapter, alternatives (direct send, broker,
+    outbox-only), revisit triggers
+- `docs/development-notes.md` A4e-1 bölümü
+
+### Verification
+
+| Kontrol                   | Sonuç                                           |
+| ------------------------- | ----------------------------------------------- |
+| typecheck                 | ✓ 3/3 paket                                     |
+| lint                      | ✓ 3/3 paket                                     |
+| build                     | ✓ 3/3 paket                                     |
+| API unit tests            | **266** PASS (baseline 253 → +13)               |
+| Smoke (live API, 14 step) | ✓ booking + dispatch + 2 SMS notifications SENT |
+| MockSmsSender inbox       | ✓ providerMessageId set, body templated         |
+
+### Plandan sapmalar (gerekçeli)
+
+| Sapma                                                                    | Gerekçe                                                                                                             |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| 4 event'ten 2'si fully wired                                             | BookingExpired + DriverDispatched cross-module read'leri (Booking + DriverProfile) bu commit'i şişirirdi. A4e-2'ye. |
+| Brief'in `SmsSenderPort.send({to, body})` → `{phone, message, sourceId}` | Yeni provider providerMessageId döner; sourceId notification id korelasyon. Identity refactor'le birlikte BREAKING. |
+| `nest-cli.json` `assets` entry                                           | Brief'de bahsedilmemiş ama şart — yoksa prod build'de UnknownTemplateError. Smoke ile yakaladım.                    |
+| Listener tek dosya (4 ayrı handler)                                      | Brief 4 ayrı listener dosyası önermiyor; aynı sınıfta `@OnEvent` x4 daha kolay test + grep'lenir.                   |
+| `forwardRef` IdentityModule ↔ NotificationsModule                        | Beklenen — UserRepositoryPort cross-module read + SmsSenderPort cross-module use; runtime resolve.                  |
+| Smoke notification verify `docker exec psql`                             | Brief HTTP endpoint ya da node fetch öneriyordu. Smoke node `spawnSync` daha hızlı.                                 |
+
+### Final commit listesi
+
+| #   | Commit hash | Konu                                                                       |
+| --- | ----------- | -------------------------------------------------------------------------- |
+| 1   | f99127e     | feat(notifications): schema, env, module skeleton, ports, errors           |
+| 2   | 7c8bdb3     | feat(notifications): template renderer with 7 turkish sms templates        |
+| 3   | 814b873     | feat(notifications): mock and netgsm sms sender adapters                   |
+| 4   | 7534486     | feat(notifications): prisma repo + queue/send use cases + bullmq worker    |
+| 5   | 9dedecc     | feat(notifications,identity): outbox listener + user repo export           |
+| 6   | 913d65f     | refactor(identity,notifications): wire shared sms sender + module + logger |
+| 7   | (bu commit) | docs: ADR 0021 + extend smoke + log session A4e-1 progress                 |
+
+### Next (A4e-2 / A4d / A4c-payment)
+
+- A4e-2: driver SMS + booking-expired SMS + retry policy + DLQ +
+  push adapter + admin monitoring
+- A4d: admin manual-review queue UI + online drivers dashboard
+- A4c-payment: iyzico Marketplace adapter
+- Live Netgsm staging deploy + manuel doğrulama
+
 <!--
 Şablon (yeni oturum buradan başlasın):
 

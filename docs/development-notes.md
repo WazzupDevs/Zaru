@@ -1148,3 +1148,109 @@ UUID'ler). Production guard'lı.
 - Real-time driver location streaming (websocket — Faz 3+)
 - DriverSearchRepo Testcontainers integration spec (CI'da PostGIS
   query'sinin gerçek DB'de doğrulanması — şimdilik smoke runtime kanıt)
+
+---
+
+## 2026-05-09 — Session A4e-1 (Notifications Infrastructure: SMS + Outbox Listener)
+
+A4c'de outbox event yazıyorduk, A4e-1 tüketici zincirini kapattı:
+event → in-process listener → BullMQ queue → SMS provider adapter.
+
+### Provider abstraction (ADR 0018 pattern)
+
+`SmsSenderPort`:
+
+- `MockSmsSender` — dev/test, in-memory inbox + global static
+  `_testOnlyGetLast/_testOnlyReset` (legacy e2e backwards-compat)
+- `NetgsmSmsSender` — prod, axios POST `/sms/send/xml`, response
+  `00|01|02 <id>` success, başka kod → `NotificationSendFailedError`
+- Factory: `NETGSM_USERCODE.startsWith("DUMMY_")` → Mock. Pricing'in
+  `AIzaSy_DUMMY` sentinel'iyle aynı disiplin.
+
+### Templates: file-based + nest-cli assets
+
+Template'ler `infrastructure/templates/<locale>/<key>.txt`. Renderer
+`fs.readFile` + `{{var}}` regex substitution + cache. NestJS prod
+build'inde TS dosyaları `dist/`'e kopyalanır ama `.txt`'ler değil — bu
+yüzden `nest-cli.json`'a `assets` entry eklendi:
+
+```json
+"assets": [{
+  "include": "modules/notifications/infrastructure/templates/**/*.txt",
+  "outDir": "dist/src",
+  "watchAssets": true
+}]
+```
+
+Yoksa prod'da `UnknownTemplateError` patlayacaktı (smoke ile
+yakaladım — dev'de `__dirname` src'yi gösterdiği için fark edilmiyordu).
+
+### Outbox listener: cross-module read pattern
+
+`OutboxNotificationListener` `@OnEvent("booking.BookingConfirmed", { async: true })`
+ile EventEmitter2'den dinler. Outbox payload PII-free (ADR 0019), bu
+yüzden recipient phone'unu kendisi `UserRepositoryPort` (Identity
+modülünden import) ile fetch eder.
+
+Bu pattern circular dep yarattı:
+
+- NotificationsModule → IdentityModule (UserRepositoryPort)
+- IdentityModule → NotificationsModule (SmsSenderPort + TemplateRenderer)
+
+`forwardRef()` her iki tarafta. NestJS runtime resolve ediyor.
+
+### Identity refactor (BREAKING)
+
+Identity'nin local `SmsSenderPort + MockSmsSender + NetgsmSmsSender +
+PrimaryFallbackSmsSender` (4 dosya) silindi. RequestOtpUseCase artık:
+
+- `SmsSenderPort.send({phone, message, sourceId})` — eskisi
+  `send({to, body})` idi
+- Body construction: `TemplateRenderer.render("identity.otp_request", "tr", { code })`
+
+Spec güncellendi (`smsArg.phone` + `smsArg.message`), e2e import
+path'leri sed ile fixledi. MockSmsSender yeni dosyada static helper'lar
+(`_testOnlyGetLast/_testOnlyReset`) korundu — A2c'den beri kullanılan
+e2e fixture surface'ı bozmamak için.
+
+### Idempotency
+
+`(sourceAggregateId, kind, recipientPhone)` üçlüsü 24h pencere içinde
+duplicate bloklar. DB compound index `notifications_source_aggregate_id_kind_recipient_phone_crea_idx`.
+
+OutboxScheduler retry → aynı event 2 kez emit → ikinci
+QueueNotificationUseCase çağrısı `findRecentDuplicate` ile mevcut row'u
+döndürür, BullMQ enqueue atlanır (createdAt < now-1s check).
+
+### Worker triplet adaptation
+
+A4b/A4c'deki Service+Worker+Scheduler triplet pattern'inden hafif
+sapma: scheduler yok (notifications event-driven, schedule değil).
+Sadece `NotificationWorker` + `BullModule.registerQueue` + service
+yerine `SendNotificationUseCase`. Concurrency 4 (SMS HTTP latency
+~200ms paralel okay).
+
+### Smoke proof
+
+Smoke step 14 eklendi: Booking2 confirm sonrası 15s polling, DB'den
+notifications query — `BOOKING_CONFIRMED` (booking2) + `BOOKING_CANCELLED`
+(booking1) status `SENT` olmalı. Smoke'da spawn `docker exec psql`.
+
+Run kanıtları:
+
+- 3 notification SENT (booking confirm + cancel)
+- MockSmsSender inbox kayıt aldı (provider message id, plaintext body)
+- Log'da `recipientPhone` `[Redacted]` olarak görünüyor (pino redact)
+
+### A4e-2'ye devredilenler
+
+- Driver SMS (`dispatch.DriverDispatched` → DriverProfile → User → phone)
+- Customer SMS for `BookingExpired` (Booking lookup needed)
+- Admin-initiated cancel notification fan-out (cancelledByRole=ADMIN
+  → still SMS the customer)
+- Retry policy: BullMQ attempts 5 + exponential backoff + DLQ
+- Push notification adapter (Expo)
+- Provider delivery callback (DELIVERED status)
+- Admin monitoring controller (list, retry, replay)
+- Testcontainers integration spec (Notification → SMS pipeline)
+- Live Netgsm staging deploy + manuel doğrulama
