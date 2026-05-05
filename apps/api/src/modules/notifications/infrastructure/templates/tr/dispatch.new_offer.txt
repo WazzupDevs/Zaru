@@ -1,0 +1,1 @@
+Event Fleet: Yeni iş! {{eventDate}} tarihinde {{totalAmount}} TRY tutarında bir rezervasyon size atandı. Detaylar için uygulamayı açın. Kod: {{bookingShortId}}

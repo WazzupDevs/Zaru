@@ -33,6 +33,11 @@ const REDACT_PATHS = [
   "*.nationalIdHash",
   "*.iban",
   "*.ibanHash",
+  // Notifications (A4e-1): plaintext recipient + rendered body live on the
+  // notifications row (provider needs them clear); redact in any logger
+  // payload that captures them.
+  "*.recipientPhone",
+  "*.renderedBody",
 ];
 
 const SERVICE_NAME = "event-fleet-api";

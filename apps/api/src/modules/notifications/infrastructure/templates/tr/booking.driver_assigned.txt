@@ -1,0 +1,1 @@
+Event Fleet: Sayın {{customerName}}, sürücünüz atandı. Detayları uygulamada görebilirsiniz. Rezervasyon: {{bookingShortId}}

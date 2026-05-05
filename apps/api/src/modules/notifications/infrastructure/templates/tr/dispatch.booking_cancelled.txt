@@ -1,0 +1,1 @@
+Event Fleet: {{eventDate}} tarihindeki {{bookingShortId}} numaralı işiniz müşteri tarafından iptal edildi. Müsaitlik takviminize geri eklendi.

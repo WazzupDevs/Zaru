@@ -8,13 +8,20 @@ import {
   RATE_LIMITER_PORT,
   type RateLimiterPort,
 } from "../../../../common/rate-limit/rate-limiter.port";
+import {
+  SMS_SENDER_PORT,
+  type SmsSenderPort,
+} from "../../../notifications/application/ports/sms-sender.port";
+import {
+  TEMPLATE_RENDERER_PORT,
+  type TemplateRendererPort,
+} from "../../../notifications/application/ports/template-renderer.port";
 import { OtpRateLimitedError } from "../../domain/errors/otp-rate-limited.error";
 import { PhoneVO } from "../../domain/value-objects/phone.vo";
 import {
   OTP_REQUEST_REPOSITORY_PORT,
   type OtpRequestRepositoryPort,
 } from "../ports/otp-request.repository.port";
-import { SMS_SENDER_PORT, type SmsSenderPort } from "../ports/sms-sender.port";
 import { TEST_OTP_CACHE_PORT, type TestOtpCachePort } from "../ports/test-otp-cache.port";
 
 const OTP_TTL_MS = 5 * 60_000;
@@ -51,6 +58,8 @@ export class RequestOtpUseCase {
     private readonly rateLimiter: RateLimiterPort,
     @Inject(TEST_OTP_CACHE_PORT)
     private readonly testOtpCache: TestOtpCachePort,
+    @Inject(TEMPLATE_RENDERER_PORT)
+    private readonly templates: TemplateRendererPort,
   ) {}
 
   async execute(input: RequestOtpInput): Promise<RequestOtpResult> {
@@ -73,9 +82,11 @@ export class RequestOtpUseCase {
       ...(input.userAgent ? { userAgent: input.userAgent } : {}),
     });
 
+    const message = await this.templates.render("identity.otp_request", "tr", { code });
     await this.sms.send({
-      to: phone.value,
-      body: `Event Fleet doğrulama kodunuz: ${code}. 5 dakika geçerlidir.`,
+      phone: phone.value,
+      message,
+      sourceId: record.id,
     });
 
     // Dev/test only — adapter is NoopTestOtpCache in production.

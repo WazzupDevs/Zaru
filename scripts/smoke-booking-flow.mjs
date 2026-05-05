@@ -247,7 +247,45 @@ async function main() {
     die("dispatch worker did not assign within 90 s — check API logs / DB driver fixture");
   }
 
-  console.log(`\n${green("✓ A4c smoke flow completed")}`);
+  // ============================================================
+  // A4e-1 notifications — outbox listener + worker delivered SMS
+  // ============================================================
+
+  step(14, "Wait for outbox notification listener (≤ 15 s)");
+  // BookingConfirmed for booking2 + BookingCancelled for booking1.
+  // Outbox drain runs ~2 s, then queue → worker → MockSmsSender.
+  const { spawnSync } = await import("node:child_process");
+  let confirmedRow = null;
+  let cancelledRow = null;
+  for (let i = 1; i <= 15; i++) {
+    await new Promise((r) => setTimeout(r, 1_000));
+    const out = spawnSync(
+      "docker",
+      [
+        "exec",
+        "event-fleet-postgres",
+        "psql",
+        "-U",
+        "eventfleet",
+        "-d",
+        "eventfleet",
+        "-tA",
+        "-c",
+        `SELECT id || '|' || kind || '|' || status || '|' || COALESCE(source_aggregate_id::text, '') FROM notifications WHERE source_aggregate_id IN ('${bookingId}','${bookingId2}') ORDER BY created_at DESC;`,
+      ],
+      { encoding: "utf-8" },
+    );
+    const lines = out.stdout.split("\n").filter(Boolean);
+    confirmedRow = lines.find((l) => l.includes(`BOOKING_CONFIRMED|SENT|${bookingId2}`));
+    cancelledRow = lines.find((l) => l.includes(`BOOKING_CANCELLED|SENT|${bookingId}`));
+    if (confirmedRow && cancelledRow) break;
+  }
+  if (!confirmedRow) die(`BOOKING_CONFIRMED notification for ${bookingId2} not SENT within 15 s`);
+  if (!cancelledRow) die(`BOOKING_CANCELLED notification for ${bookingId} not SENT within 15 s`);
+  ok(`BOOKING_CONFIRMED → SENT (${confirmedRow.split("|")[0]})`);
+  ok(`BOOKING_CANCELLED → SENT (${cancelledRow.split("|")[0]})`);
+
+  console.log(`\n${green("✓ A4e-1 smoke flow completed")}`);
   console.log(`   booking1 (cancel flow):   ${bookingId}`);
   console.log(`   booking2 (dispatch flow): ${bookingId2}`);
   console.log(`   driver assigned:          ${dispatched.driverId}`);

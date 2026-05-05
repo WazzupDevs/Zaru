@@ -25,6 +25,7 @@ import { BookingModule } from "./modules/booking/booking.module";
 import { CatalogModule } from "./modules/catalog/catalog.module";
 import { DispatchModule } from "./modules/dispatch/dispatch.module";
 import { IdentityModule } from "./modules/identity/identity.module";
+import { NotificationsModule } from "./modules/notifications/notifications.module";
 import { PricingModule } from "./modules/pricing/pricing.module";
 import { SupplyModule } from "./modules/supply/supply.module";
 
@@ -58,6 +59,7 @@ import { SupplyModule } from "./modules/supply/supply.module";
     PricingModule,
     BookingModule,
     DispatchModule,
+    NotificationsModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: DomainExceptionFilter },
