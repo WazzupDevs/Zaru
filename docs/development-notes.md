@@ -846,3 +846,179 @@ alt klasör + per-domain dosya pattern'i düşünülecek.
 - `BookingExpiryWorker` (BullMQ): unconfirmed DRAFT bookings + EXPIRED
   PriceQuote temizliği
 - Customer mobile akışı (Faz 2 paralel)
+
+---
+
+## 2026-05-05 — Session A4b (Booking State Machine + Workers)
+
+A4a Pricing motorunu kullanarak Booking modülünü canlandıran oturum.
+9-state lifecycle, atomic confirm, customer/admin cancel, BullMQ-tabanlı
+DRAFT TTL + PriceQuote cleanup worker'ları, public + admin controller'lar.
+
+### Test-only OTP endpoint (smoke ergonomi düzeltmesi)
+
+A4a smoke'unda kullanıcının API log'undan OTP kodu kopyalaması felaketti.
+A4b'de port + adapter pattern'iyle çözüldü:
+
+- `TestOtpCachePort` (application/ports) — soyutlama
+- `InMemoryTestOtpCache` (infrastructure) — dev/test, 60s TTL, NODE_ENV
+  guard'ı içeride
+- `NoopTestOtpCache` — production'da bind, hep null döner
+- `TestOnlyController` — `GET /auth/_test/last-otp?phone=...`,
+  `IdentityModule.controllers` içinde `NODE_ENV !== "production"` ise mount
+
+Defense in depth: production'da hem controller hiç bind olmaz, hem cache
+no-op'tur. `RequestOtpUseCase` plain code'u `cache.record(phone, code)`
+ile kaydeder — SMS body parse etmek yerine explicit data flow.
+
+### Booking schema genişlemesi
+
+A4a iskeleti 5 kolon + 1 enum'dan (DRAFT) ibaretti. A4b 8 enum değer +
+~20 kolon ekledi:
+
+- Quote snapshot kolonları (pickup/dropoff lat/lng/address, event window,
+  totalAmount, currency) — immutable price guarantee'nin uygulaması
+- Lifecycle audit timestamps (`confirmedAt`, `driverAssignedAt`,
+  `startedAt`, `completedAt`, `cancelledAt`, `expiredAt`)
+- Cancellation context (`cancellationReason`, `cancelledByUserId`)
+- Driver/vehicle FK'ları (A4d'de doldurulacak)
+- `deletedAt` (soft delete)
+- 4 yeni index (status+eventStartAt, driver+status, eventStartAt)
+
+Migration `prisma migrate diff --script` ile üretildi (CLAUDE.md kuralı).
+Bookings tablosu boştu, NOT NULL ekleme güvenli — migration header'ında
+not düşüldü ki prod'a giderken backfill düşünülsün.
+
+### State machine pattern (ADR 0019)
+
+Custom hand-rolled FSM, XState değil. 9 state × 11 transition
+`ALLOWED_TRANSITIONS` tablosunda. Üç seviye gardiyan:
+
+1. `BookingStateMachine.assertTransition()` — domain layer
+2. `repo.transitionStatus(tx, { fromVersion })` — atomic optimistic lock
+3. Prisma enum — DB layer son durak
+
+37 spec test her geçerli + bir avuç geçersiz transition'ı pinler.
+`IN_PROGRESS → CANCELLED_*` deliberately yok — event başladıysa müşteri
+DISPUTED akışına gider. Bu kuralın değişme olasılığı yüksek (A4d driver
+no-show senaryosu) ama o zaman ADR güncellemesi + spec güncellemesi
+beraber gelir.
+
+### DRAFT bypass (geçici, A4c'de geri alınacak)
+
+`ConfirmBooking` A4b'de DRAFT'ı atlayıp direkt CONFIRMED yaratıyor. Çünkü:
+
+- Mobile flow şu an: quote → onayla butonu → confirm
+- Ödeme gelmeden DRAFT-CONFIRMED ayrımı UX'e değer katmıyor
+- A4c (payment) gelince: confirm → DRAFT, payment.authorized → CONFIRMED
+
+`BookingExpiryWorker` zaten DRAFT'ı süpürür. A4b'de gerçek DRAFT row
+yok, worker dead-code; spec sentetik DRAFT row'la sweep çalıştırıyor —
+sözleşme A4c'ye hazır.
+
+### Atomic ConfirmBooking flow
+
+```
+tx.run(async (tx) => {
+  const quote = await quoteRepo.findById(tx, quoteId);   // owner check
+  if (quote.requestedByUserId !== actor.userId) throw BookingAccessDenied;
+
+  const consumed = await quoteRepo.consumeQuote(tx, quoteId, bookingId, now);
+  // updateMany WHERE status='ACTIVE' AND expiresAt>now → race-safe
+
+  const booking = await bookingRepo.create(tx, {
+    ...consumed,        // snapshot — immutable price guarantee
+    status: "CONFIRMED",
+    confirmedAt: now,
+  });
+
+  await outbox.write(tx, BookingCreated);
+  await outbox.write(tx, BookingConfirmed);
+});
+```
+
+Owner check ÖNCE çalışır (yanlış kullanıcı consume'a kadar bile inmez).
+İki paralel confirm aynı quoteId'ye yapılırsa biri başarılı, diğeri
+QuoteAlreadyConsumedError. Smoke testi runtime'da kanıtladı: ikinci
+confirm 409 döndü.
+
+### Cancel ve aktör ayrımı
+
+`CancelBookingUseCase` tek metodla iki aktöre hizmet ediyor: customer
+ve admin. Her ikisi de target state CANCELLED_BY_CUSTOMER. Audit:
+`cancelledByUserId = actor.userId` (admin müşteri adına iptal etse de
+gerçek aktör korunur), event payload `cancelledByRole: "ADMIN" | "CUSTOMER"`.
+
+Reason kolonu zorunlu (trim'lenmiş, non-empty), DB'ye yazılır ama outbox
+payload'a GİTMEZ — free-text customer input, PII benzeri.
+
+### BullMQ workers (NOT @nestjs/schedule)
+
+Plan briefi `@Cron(EVERY_MINUTE)` örneği veriyordu ama bu codebase
+BullMQ repeat job pattern'i kullanıyor (precedent: `IdempotencyCleanupScheduler`,
+`OutboxScheduler`). `@nestjs/schedule` hiç kurulu değil. A4b iki worker
+ekledi:
+
+- `BookingExpiryService` + `Worker` + `Scheduler` — DRAFT bookings 30dk
+  sonra EXPIRED + outbox event
+- `PriceQuoteCleanupService` + `Worker` + `Scheduler` — ACTIVE quotes
+  TTL geçince EXPIRED + outbox event
+
+Service her ikisinde de Worker'dan ayrı; spec service.sweep() çağırıp
+BullMQ olmadan FrozenClock altında test ediyor.
+
+### Pricing rate limit (A4a TODO çözüldü)
+
+`POST /pricing/quotes`: 10/dakika/user. Use case içinde
+`RateLimiterPort.check()` (mevcut Redis sliding window altyapısı).
+Idempotency-Key kontrolü controller'da, rate limit kontrolü use case'de —
+form double-tap idempotency ile geçer, scraping rate limit ile durur.
+
+### Outbox PII discipline (sürdürülüyor)
+
+Tüm 4 booking event payload'ı:
+
+- `BookingCreated` — bookingId, customerId, vehicleTypeId, categoryId,
+  totalAmount, currency, eventStartAt, eventEndAt
+- `BookingConfirmed` — bookingId, customerId, confirmedAt
+- `BookingCancelled` — bookingId, cancelledByUserId, cancelledByRole,
+  previousStatus, cancelledAt (REASON YOK)
+- `BookingExpired` — bookingId, expiredAt
+
+Hiçbiri lat/lng/address taşımıyor. Spec assertion'ı bunu pinler.
+
+### Smoke kanıtı (A4a yorgunluğunun cevabı)
+
+`scripts/smoke-booking-flow.mjs` — 11 adımlı tek dosya Node smoke:
+healthz → OTP request → test-only OTP fetch → login → catalog → quote →
+confirm (CONFIRMED) → double-confirm (409) → list → cancel
+(CANCELLED_BY_CUSTOMER) → re-cancel (409). Smoke'u Node yazdık çünkü
+bash + curl + jq + node-eval Windows MSYS'de `=>` arrow function
+operatörünü redirect olarak yorumlayıp argv'yi mahvediyordu (tek dosya,
+tek runtime tercih edildi).
+
+Smoke runtime kanıtları:
+
+- Quote total **6877.00 TRY** (×1.30 yaz × ×1.15 hafta sonu compound)
+- 3 outbox event (BookingCreated/Confirmed/Cancelled) hepsi **processed**
+  (BullMQ outbox worker drain)
+- Atomic consume: 2. confirm 409
+- Terminal-state guard: 2. cancel 409
+
+### Lifecycle integration spec (Testcontainers) — A4c'ye ertelendi
+
+A4a'da Docker Desktop sleep nedeniyle integration spec çalışmamıştı;
+manuel smoke yeşil. A4b'de aynı seçim: smoke runtime'da happy path +
+race + terminal guard'ları kanıtladı, ayrıca outbox drain DB'de
+doğrulandı. Testcontainers spec'i A4c (payment) ile birlikte
+yazılacak — orada provizyon/iade akışı için zaten gerçek DB lazım,
+booking lifecycle de o pakette test edilebilir.
+
+### A4c'ye devredilenler
+
+- Payment (iyzico Marketplace adapter)
+- Booking flow değişikliği: confirm → DRAFT, payment.authorized → CONFIRMED
+- Refund logic (cancellation state-aware)
+- Booking lifecycle Testcontainers spec
+- Driver no-show senaryosu için state machine `IN_PROGRESS → CANCELLED_BY_DRIVER`
+  düşüncesi (ADR güncellenir)

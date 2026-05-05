@@ -1497,6 +1497,180 @@ A4c (sonraki): Payment iyzico marketplace entegrasyonu.
 
 ---
 
+## 2026-05-05 — Session A4b: Booking State Machine + Confirm/Cancel + Workers
+
+### Done
+
+**Test-only OTP endpoint (smoke ergonomi)**
+
+- `TestOtpCachePort` + `InMemoryTestOtpCache` (dev/test, 60s TTL) +
+  `NoopTestOtpCache` (production no-op)
+- `TestOnlyController` `GET /auth/_test/last-otp?phone=...` —
+  `IdentityModule.controllers` içinde `NODE_ENV !== "production"`
+  guard'ı (controller hiç bind olmaz)
+- `RequestOtpUseCase` plain code'u cache'e yazıyor (SMS body parse yok)
+- A4a smoke'unda kullanıcı log'dan kod kopyalamak zorunda kalmıştı; A4b
+  smoke'unda otomatik
+
+**Booking schema + state machine**
+
+- 8 yeni `BookingStatus` enum değer (CONFIRMED, DRIVER*ASSIGNED,
+  IN_PROGRESS, COMPLETED, CANCELLED_BY*\*, EXPIRED, DISPUTED)
+- 20+ yeni kolon: quote snapshot (pickup/dropoff lat/lng/address,
+  totalAmount, currency, event window), 6 lifecycle audit timestamp,
+  cancellation context, driver/vehicle FK (A4d için), deletedAt
+- 4 yeni index, 5 yeni FK
+- `prisma migrate diff --script` ile üretilen migration (CLAUDE.md
+  kuralı), bookings tablosu boş → NOT NULL ekleme güvenli
+- `BookingStateMachine` custom hand-rolled FSM (ADR 0019):
+  `canTransition`, `assertTransition`, `isTerminal`, `isCancellable`
+- 6 domain error: `BookingNotFoundError`, `InvalidBookingTransitionError`,
+  `BookingNotCancellableError`, `BookingAccessDeniedError`,
+  `ConcurrentBookingModificationError`, `CancellationReasonRequiredError`
+- 7 domain event tipi (`booking.BookingCreated/Confirmed/DriverAssigned/Started/Completed/Cancelled/Expired`)
+  PII-free payload tanımları
+- `BookingRepositoryPort` genişledi: `transitionStatus` (atomic
+  optimistic-lock + status), `expireDraftsOlderThan` (worker bulk path),
+  `listForCustomer` (id-cursor pagination)
+
+**Use cases (test-first)**
+
+- `ConfirmBookingUseCase` — owner check + atomic consumeQuote +
+  CONFIRMED booking insert + 2 outbox event, hepsi tek tx
+- `CancelBookingUseCase` — customer + admin tek path
+  (CANCELLED_BY_CUSTOMER), reason zorunlu (DB'ye yazılır, payload'a
+  GİTMEZ), state machine asserts, optimistic lock
+- `GetBookingUseCase` — owner-or-staff (ADMIN/SUPPORT) access
+- `ListMyBookingsUseCase` — customer-scoped, status filter, cursor
+  pagination
+
+**Background workers (BullMQ repeat job pattern)**
+
+- `BookingExpiryService/Worker/Scheduler` — DRAFT 30dk → EXPIRED, outbox
+  event per row. A4b'de dead-code (DRAFT bypass), A4c payment
+  re-introduce edince devreye girer
+- `PriceQuoteCleanupService/Worker/Scheduler` — ACTIVE quotes TTL geçince
+  EXPIRED, outbox event per row
+- `PriceQuoteRepositoryPort` `expireOlderThan` ile genişledi
+- Brief `@nestjs/schedule + @Cron` örnek vermişti, codebase BullMQ
+  precedent'ini takip ediyor (`IdempotencyCleanupScheduler`); bu
+  sapma flag edildi ve uygulandı
+
+**Pricing rate limit (A4a TODO çözüldü)**
+
+- `RequestPriceQuoteUseCase` 10/dakika/user, `RateLimiterPort` (sliding
+  window) üzerinden
+- `PricingRateLimitedError` (429, retryAfterSeconds)
+- Idempotency-Key form double-tap için zaten controller'da, rate-limit
+  scrape için use-case'de — aynı uçtan farklı sözleşmeler
+
+**Controllers + shared-types**
+
+- `packages/shared-types/booking/`: BookingStatus, ConfirmBookingInput,
+  CancelBookingInput, ListMyBookingsQuery, BookingResponse
+- `BookingController` — POST /bookings/confirm (idem),
+  POST /:id/cancel (idem), GET /me, GET /:id
+- `AdminBookingController` — `@Roles("ADMIN")`, GET /admin/bookings/:id,
+  POST /:id/cancel
+- `BookingMapper` — entity → response (lat/lng wire'a çıkmaz)
+- BookingModule controllers + scheduler/worker provider'ları
+
+**ADR + docs**
+
+- `docs/adr/0019-booking-state-machine.md` — custom FSM (XState değil)
+  kararı, alternatives, revisit trigger
+- `docs/development-notes.md` — A4b bölümü (test-only endpoint, schema
+  genişlemesi, state machine, DRAFT bypass, ConfirmBooking flow, cancel
+  ve aktör ayrımı, workers, rate limit, outbox PII, smoke kanıtı,
+  lifecycle integration ertelemesi)
+
+**Smoke (canlı runtime kanıtı)**
+
+- `scripts/smoke-booking-flow.mjs` — tek dosya Node smoke (bash + curl
+  - jq + node-eval Windows MSYS'de `=>` arrow operatörünü redirect
+    olarak yorumlayıp argv'yi yedi → tek runtime tercih edildi)
+- 11 adım, hepsi yeşil:
+  1. healthz OK
+  2. OTP request → requestId
+  3. test-only endpoint → 6 haneli kod
+  4. login → JWT
+  5. catalog ids
+  6. **quote total = 6877.00 TRY** (×1.30 yaz × ×1.15 hafta sonu compound)
+  7. confirm → CONFIRMED
+  8. **double-confirm → 409** (atomic consume race-safe)
+  9. ListMyBookings = 1 row
+  10. cancel → CANCELLED_BY_CUSTOMER
+  11. **re-cancel → 409** (terminal-state guard)
+- Outbox tablosunda 3 booking event (Created/Confirmed/Cancelled) hepsi
+  **processed=true** (BullMQ outbox worker drain doğrulandı)
+
+### Verification
+
+| Adım                       | Sonuç                                                |
+| -------------------------- | ---------------------------------------------------- |
+| typecheck                  | ✓                                                    |
+| lint                       | ✓ (api / shared-types / admin)                       |
+| build                      | ✓                                                    |
+| api unit tests             | **227** PASS (baseline 151 → +76)                    |
+| shared-types unit tests    | 49 PASS (booking schema'lar değişiklik gerektirmedi) |
+| smoke (live API)           | ✓ 11 adımın hepsi (6877.00 TRY pinned)               |
+| outbox events processed    | ✓ Created + Confirmed + Cancelled                    |
+| Testcontainers integration | ⏭ A4c (payment) ile birlikte yazılacak              |
+
+Yeni unit testler:
+
+- `in-memory-test-otp-cache.spec.ts` 8 test
+- `request-otp.use-case.spec.ts` +1 test (cache.record assertion)
+- `booking-state-machine.spec.ts` 37 test (her geçerli + bir avuç
+  geçersiz transition)
+- `confirm-booking.use-case.spec.ts` 7 test (owner check, expired,
+  consumed, double-confirm, PII-free payload assertion)
+- `cancel-booking.use-case.spec.ts` 15 test (customer + admin path,
+  state guards, reason validation, optimistic lock miss)
+- `get-booking.use-case.spec.ts` 4 test
+- `booking-expiry.service.spec.ts` 2 test (cutoff math, empty case)
+- `price-quote-cleanup.service.spec.ts` 2 test
+
+### Plandan sapmalar (gerekçeli)
+
+| Sapma                                            | Gerekçe                                                                                                                        |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| `@Cron` yerine BullMQ repeat job                 | `@nestjs/schedule` codebase'de yok. Precedent: `IdempotencyCleanupScheduler`/`OutboxScheduler`. Aynı semantic, mevcut altyapı. |
+| Lifecycle integration spec yok                   | Smoke (live API) happy path + race + terminal guard'ı kanıtladı. Testcontainers A4c ile birlikte (payment için zaten gerek).   |
+| ADR 0019 plan'da öngörülen state'lerle aynı      | 9 state, 11 transition. IN*PROGRESS → CANCELLED*\* deliberately yok (DISPUTED akışı).                                          |
+| DRAFT bypass (ConfirmBooking → direkt CONFIRMED) | Brief'de açıkça yazılı; A4c payment ile DRAFT geri devreye girecek; expiry worker hazır.                                       |
+| Cancel state sayısı 3 değil 2                    | CANCELLED_BY_ADMIN eklenmedi; admin müşteri adına iptal eder, audit `cancelledByUserId` + event payload role tag ile.          |
+| Smoke bash → Node                                | Windows MSYS bash `=>` arrow operatörünü redirect parser'a kaptırıyor. Tek dosya Node = portable + okunaklı.                   |
+
+### Final commit listesi
+
+| #   | Commit hash | Konu                                                                       |
+| --- | ----------- | -------------------------------------------------------------------------- |
+| 1   | 59f2ba5     | feat(identity): add test-only otp cache port and adapters                  |
+| 2   | 43568c9     | feat(identity): record plaintext otp into test cache from request use case |
+| 3   | 44c4e2d     | feat(identity): wire test-only last-otp endpoint with env guard            |
+| 4   | 6268255     | feat(db): expand booking schema with full lifecycle fields                 |
+| 5   | 4750c07     | feat(booking): add status enum, custom state machine, errors, and events   |
+| 6   | 70d3ee1     | feat(booking): implement confirm booking use case                          |
+| 7   | 73335a1     | feat(booking): implement cancel booking with state machine guard           |
+| 8   | 1d589e4     | feat(booking): implement get and list my bookings use cases                |
+| 9   | 88e07ce     | feat(pricing): add price quote cleanup worker (BullMQ repeat job)          |
+| 10  | e2045c2     | feat(booking): add booking expiry worker for draft ttl cleanup             |
+| 11  | 8fd2344     | feat(shared-types): add booking schemas                                    |
+| 12  | 3062ce7     | feat(pricing): rate-limit quote requests at 10/min/user                    |
+| 13  | 4c53277     | feat(booking): add public and admin booking controllers                    |
+| 14  | d11c2d8     | chore(scripts): add a4b smoke flow runner                                  |
+| 15  | (bu commit) | docs: add ADR 0019 + log session A4b progress                              |
+
+### Next (A4c)
+
+- Payment modülü: iyzico Marketplace adapter (port + adapter + mock)
+- Booking flow: ConfirmBooking → DRAFT, payment.authorized → CONFIRMED
+  (DRAFT bypass kaldırılır, expiry worker devreye girer)
+- Refund logic: state-aware (DRAFT: void, CONFIRMED: full, IN_PROGRESS: ?)
+- Booking lifecycle Testcontainers spec (payment ile birlikte)
+- Customer mobile flow (paralel A4e)
+
 <!--
 Şablon (yeni oturum buradan başlasın):
 
