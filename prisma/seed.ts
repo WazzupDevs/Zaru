@@ -342,6 +342,107 @@ async function seedWeddingCarPricing(): Promise<void> {
   );
 }
 
+/**
+ * Dispatch fixture (DEV/TEST ONLY) — wires a sample APPROVED driver +
+ * ACTIVE vehicle + a fresh location near Sultanahmet so the dispatch
+ * worker can match the smoke booking. Skipped in production. Idempotent
+ * via deterministic phone + tckn hash.
+ *
+ * The driver gets a separate user (own phone) so the customer flow
+ * stays orthogonal. Auth bypass for the smoke fixture is via the admin
+ * endpoint, but we still need an APPROVED driver record on a real user
+ * so booking dispatch sees a candidate.
+ */
+async function seedDispatchFixture(): Promise<void> {
+  if (process.env.NODE_ENV === "production") {
+    // eslint-disable-next-line no-console
+    console.log("⚠️  NODE_ENV=production — dispatch fixture skipped.");
+    return;
+  }
+  const phone = "+905557778899";
+  const userId = "01890d8e-0000-7000-8000-000000000001";
+  const driverProfileId = "01890d8e-0000-7000-8000-000000000002";
+  const vehicleId = "01890d8e-0000-7000-8000-000000000003";
+
+  const category = await prisma.serviceCategory.findUnique({
+    where: { slug: "wedding-car" },
+  });
+  if (!category) return;
+  const sedan = await prisma.vehicleType.findUnique({
+    where: { categoryId_slug: { categoryId: category.id, slug: "classic-sedan" } },
+  });
+  if (!sedan) return;
+
+  // 1. Driver user — phone-verified.
+  await prisma.user.upsert({
+    where: { id: userId },
+    update: {},
+    create: {
+      id: userId,
+      phoneE164: phone,
+      role: "DRIVER",
+      phoneVerifiedAt: new Date(),
+      displayName: "Smoke Driver",
+    },
+  });
+
+  // 2. DriverProfile — APPROVED + online + fresh location near Sultanahmet
+  // (smoke booking pickup is 41.0082 / 28.9784).
+  await prisma.driverProfile.upsert({
+    where: { id: driverProfileId },
+    update: {
+      // Refresh location each seed run so freshness window is always green.
+      lastKnownLat: "41.0095",
+      lastKnownLng: "28.9800",
+      lastLocationUpdate: new Date(),
+      isOnline: true,
+      status: "APPROVED",
+    },
+    create: {
+      id: driverProfileId,
+      userId,
+      firstName: "Smoke",
+      lastName: "Driver",
+      // HMAC-fixed dummy hashes — production uses PiiHasher; smoke does not
+      // exercise the hash path. Just need non-null values to satisfy NOT NULL.
+      nationalIdHash: "smoke-fixture-tckn-hash",
+      birthDate: new Date("1990-01-01"),
+      ibanHash: "$argon2id$v=19$m=65536,t=3,p=4$smoke-fixture-iban-hash",
+      ibanLast4: "0000",
+      status: "APPROVED",
+      approvedAt: new Date(),
+      lastKnownLat: "41.0095",
+      lastKnownLng: "28.9800",
+      lastLocationUpdate: new Date(),
+      isOnline: true,
+      ratingAverage: "4.9",
+      ratingCount: 10,
+    },
+  });
+
+  // 3. Vehicle — ACTIVE + classic-sedan vehicleType.
+  await prisma.vehicle.upsert({
+    where: { id: vehicleId },
+    update: { status: "ACTIVE" },
+    create: {
+      id: vehicleId,
+      driverProfileId,
+      vehicleTypeId: sedan.id,
+      plateNumber: "34SMOKE01",
+      brand: "Renault",
+      model: "Symbol",
+      year: 2022,
+      color: "ivory",
+      attributes: {},
+      photoKeys: [],
+      status: "ACTIVE",
+    },
+  });
+
+  // eslint-disable-next-line no-console
+  console.log(`✓ Dispatch fixture seeded: driver ${driverProfileId} online @ 41.0095/28.9800`);
+}
+
 async function main(): Promise<void> {
   // eslint-disable-next-line no-console
   console.log("Seeding wedding-car category...");
@@ -352,6 +453,9 @@ async function main(): Promise<void> {
   // eslint-disable-next-line no-console
   console.log("Seeding wedding-car pricing...");
   await seedWeddingCarPricing();
+  // eslint-disable-next-line no-console
+  console.log("Seeding dispatch fixture...");
+  await seedDispatchFixture();
   // eslint-disable-next-line no-console
   console.log("Seed complete.");
 }

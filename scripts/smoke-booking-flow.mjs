@@ -179,10 +179,80 @@ async function main() {
   }
   ok("Terminal-state guard fired (409)");
 
-  console.log(`\n${green("✓ A4b smoke flow completed")}`);
-  console.log(`   booking: ${bookingId}`);
-  console.log(`   quote:   ${quoteId}`);
-  console.log(`   user:    ${userId}`);
+  // ============================================================
+  // A4c dispatch — second booking flows through the worker
+  // ============================================================
+
+  step(12, "Confirm a SECOND booking for dispatch verification");
+  // Wait for the per-user pricing rate-limit window before requesting
+  // another quote. This isolates A4c's dispatch flow from A4b's cancel test.
+  console.log("  (waiting 65 s for pricing rate-limit reset)");
+  await new Promise((r) => setTimeout(r, 65_000));
+
+  const quote2 = await req("POST", "/pricing/quotes", {
+    token,
+    idemKey: `smoke-quote-2-${ts()}`,
+    body: {
+      vehicleTypeId: sedan.id,
+      categoryId,
+      pickupLat: 41.0082,
+      pickupLng: 28.9784,
+      dropoffLat: 41.0428,
+      dropoffLng: 29.0093,
+      pickupAddress: "Sultanahmet, Istanbul",
+      dropoffAddress: "Besiktas, Istanbul",
+      // Different event window so the dispatch worker doesn't see the
+      // cancelled booking's window (cancellation already releases it
+      // but distinct windows make the test crisp).
+      eventStartAt: "2026-09-12T14:00:00.000Z",
+      eventEndAt: "2026-09-12T22:00:00.000Z",
+      selectedAddonIds: [],
+    },
+  });
+  if (quote2.status !== 201 && quote2.status !== 200) {
+    die(`quote2 ${quote2.status}: ${quote2.raw}`);
+  }
+  const quoteId2 = quote2.body?.id;
+  ok(`Quote2 ${quoteId2}`);
+
+  const confirm2 = await req("POST", "/bookings/confirm", {
+    token,
+    idemKey: `smoke-confirm-3-${ts()}`,
+    body: { quoteId: quoteId2 },
+  });
+  if (confirm2.status !== 201 && confirm2.status !== 200) {
+    die(`confirm2 ${confirm2.status}: ${confirm2.raw}`);
+  }
+  const bookingId2 = confirm2.body?.id;
+  ok(`Booking2 ${bookingId2} CONFIRMED — handoff to dispatch worker`);
+
+  step(13, "Wait for dispatch worker (≤ 90 s)");
+  let dispatched = null;
+  for (let attempt = 1; attempt <= 18; attempt++) {
+    await new Promise((r) => setTimeout(r, 5_000));
+    const get = await req("GET", `/bookings/${bookingId2}`, { token });
+    if (get.status !== 200) die(`get booking2 ${get.status}`);
+    if (get.body?.status === "DRIVER_ASSIGNED" && get.body?.driverId) {
+      dispatched = get.body;
+      ok(
+        `Dispatch worker fired — status DRIVER_ASSIGNED, driver ${get.body.driverId}, vehicle ${get.body.vehicleId}`,
+      );
+      break;
+    }
+    if (attempt % 3 === 0) {
+      console.log(`  …still ${get.body?.status} after ${attempt * 5} s`);
+    }
+  }
+  if (!dispatched) {
+    die("dispatch worker did not assign within 90 s — check API logs / DB driver fixture");
+  }
+
+  console.log(`\n${green("✓ A4c smoke flow completed")}`);
+  console.log(`   booking1 (cancel flow):   ${bookingId}`);
+  console.log(`   booking2 (dispatch flow): ${bookingId2}`);
+  console.log(`   driver assigned:          ${dispatched.driverId}`);
+  console.log(`   vehicle assigned:         ${dispatched.vehicleId}`);
+  console.log(`   user:                     ${userId}`);
 }
 
 main().catch((err) => {
