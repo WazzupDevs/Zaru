@@ -72,6 +72,10 @@ export class PrismaPriceQuoteRepository implements PriceQuoteRepositoryPort {
     if (result.count === 0) {
       const existing = await tx.priceQuote.findUnique({ where: { id } });
       if (!existing) throw new QuoteNotFoundError();
+      // Order matters: explicit EXPIRED status comes before the
+      // CONSUMED check, otherwise a row the cleanup worker has
+      // already moved to EXPIRED would surface as "already consumed".
+      if (existing.status === "EXPIRED") throw new QuoteExpiredError();
       if (existing.status === "CONSUMED") throw new QuoteAlreadyConsumedError();
       if (existing.expiresAt.getTime() <= now.getTime()) throw new QuoteExpiredError();
       // If we reach here something else mutated the row concurrently.

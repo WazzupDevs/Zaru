@@ -2,6 +2,7 @@ import { Injectable } from "@nestjs/common";
 import { OnEvent } from "@nestjs/event-emitter";
 import { InjectPinoLogger, PinoLogger } from "nestjs-pino";
 
+import { formatTrCurrency } from "../services/format.helpers";
 import { NotificationContextProvider } from "../services/notification-context.provider";
 import { QueueNotificationUseCase } from "../use-cases/queue-notification.use-case";
 
@@ -27,8 +28,13 @@ export class OutboxNotificationListener {
     private readonly logger: PinoLogger,
   ) {}
 
-  @OnEvent("booking.BookingConfirmed", { async: true })
-  async onBookingConfirmed(payload: {
+  // Subscribed to BookingCreated (not BookingConfirmed): the Created
+  // payload carries totalAmount + eventStartAt + eventEndAt that the
+  // template needs. ConfirmBookingUseCase emits both events in the
+  // same tx; BookingConfirmed is the lifecycle marker (time-only) for
+  // future audit-style consumers and intentionally not consumed here.
+  @OnEvent("booking.BookingCreated", { async: true })
+  async onBookingCreated(payload: {
     bookingId: string;
     customerId: string;
     vehicleTypeId: string;
@@ -36,12 +42,13 @@ export class OutboxNotificationListener {
     totalAmount: string;
     currency: string;
     eventStartAt: string;
+    eventEndAt: string;
   }): Promise<void> {
     const customer = await this.contextProvider.getCustomerContext(payload.customerId);
     if (!customer) {
       this.logger.warn(
         { bookingId: payload.bookingId, customerId: payload.customerId },
-        "skip BookingConfirmed notification: customer not found",
+        "skip BookingCreated notification: customer not found",
       );
       return;
     }
@@ -56,9 +63,9 @@ export class OutboxNotificationListener {
         customerName: customer.displayName ?? "Müşterimiz",
         bookingShortId: payload.bookingId.slice(0, 8).toUpperCase(),
         eventDate: this.formatTrDate(new Date(payload.eventStartAt)),
-        totalAmount: payload.totalAmount,
+        totalAmount: formatTrCurrency(payload.totalAmount),
       },
-      sourceEventType: "booking.BookingConfirmed",
+      sourceEventType: "booking.BookingCreated",
       sourceAggregateId: payload.bookingId,
     });
   }
@@ -169,7 +176,7 @@ export class OutboxNotificationListener {
       locale: "tr",
       variables: {
         eventDate: this.formatTrDate(booking.eventStartAt),
-        totalAmount: booking.totalAmount,
+        totalAmount: formatTrCurrency(booking.totalAmount),
         bookingShortId: booking.bookingShortId,
       },
       sourceEventType: "dispatch.DriverDispatched",

@@ -14,7 +14,11 @@ export function toBookingResponse(b: BookingEntity): BookingResponse {
     dropoffAddress: b.dropoffAddress,
     eventStartAt: b.eventStartAt.toISOString(),
     eventEndAt: b.eventEndAt.toISOString(),
-    totalAmount: b.totalAmount.toString(),
+    // Prisma Decimal `.toString()` drops trailing zeros ("6877" not
+    // "6877.00"). The shared-types contract is "always two decimal
+    // places"; Number → toFixed(2) enforces that on the wire while
+    // staying robust against test fixtures that pass plain strings.
+    totalAmount: Number(b.totalAmount.toString()).toFixed(2),
     currency: b.currency,
     confirmedAt: b.confirmedAt ? b.confirmedAt.toISOString() : null,
     driverAssignedAt: b.driverAssignedAt ? b.driverAssignedAt.toISOString() : null,
