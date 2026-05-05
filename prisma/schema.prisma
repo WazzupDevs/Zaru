@@ -256,17 +256,32 @@ model DriverProfile {
   // Marketplace commission as a fraction (0.15 = 15%). Override per driver
   // is allowed; default mirrors iyzico onboarding contract.
   commissionRate   Decimal                @default(0.15) @map("commission_rate") @db.Decimal(5, 4)
-  createdAt        DateTime               @default(now()) @map("created_at")
-  updatedAt        DateTime               @updatedAt @map("updated_at")
-  deletedAt        DateTime?              @map("deleted_at")
-  version          Int                    @default(0)
-  user             User                   @relation(fields: [userId], references: [id])
-  vehicles         Vehicle[]
-  documents        Document[]
-  availabilities   VehicleAvailability[]
-  bookings         Booking[]
+
+  // Dispatch metadata (A4c). Driver app (A4f) reports location every few
+  // minutes; admin console can also write for tests. The generated
+  // last_known_location geography column + GIST index live in raw SQL —
+  // Prisma DSL has no PostGIS support.
+  lastKnownLat       Decimal?  @map("last_known_lat") @db.Decimal(10, 7)
+  lastKnownLng       Decimal?  @map("last_known_lng") @db.Decimal(10, 7)
+  lastLocationUpdate DateTime? @map("last_location_update")
+  isOnline           Boolean   @default(false) @map("is_online")
+  // Aggregate rating — Reviews module (Faz 3) populates; default 5.0 so
+  // brand-new approved drivers aren't filtered out by minRating.
+  ratingAverage      Decimal   @default(5.0) @map("rating_average") @db.Decimal(3, 2)
+  ratingCount        Int       @default(0) @map("rating_count")
+
+  createdAt      DateTime              @default(now()) @map("created_at")
+  updatedAt      DateTime              @updatedAt @map("updated_at")
+  deletedAt      DateTime?             @map("deleted_at")
+  version        Int                   @default(0)
+  user           User                  @relation(fields: [userId], references: [id])
+  vehicles       Vehicle[]
+  documents      Document[]
+  availabilities VehicleAvailability[]
+  bookings       Booking[]
 
   @@index([status])
+  @@index([isOnline, lastLocationUpdate])
   @@index([nationalIdHash])
   @@map("driver_profiles")
 }
@@ -539,9 +554,17 @@ model Booking {
   cancellationReason String? @map("cancellation_reason")
   cancelledByUserId  String? @map("cancelled_by_user_id") @db.Uuid
 
-  // Driver / vehicle assignment (A4d).
+  // Driver / vehicle assignment (A4c dispatch).
   driverId  String? @map("driver_id") @db.Uuid
   vehicleId String? @map("vehicle_id") @db.Uuid
+
+  // Dispatch metadata. Worker increments dispatchAttempts on each match
+  // attempt; lastDispatchAt is the cooldown anchor (worker skips a row
+  // dispatched in the last 60s). dispatchFailedReason is the most recent
+  // failure code (no_drivers_in_radius / no_eligible_drivers / etc).
+  dispatchAttempts     Int       @default(0) @map("dispatch_attempts")
+  lastDispatchAt       DateTime? @map("last_dispatch_at")
+  dispatchFailedReason String?   @map("dispatch_failed_reason")
 
   version   Int       @default(0)
   createdAt DateTime  @default(now()) @map("created_at")
