@@ -41,9 +41,14 @@ export interface BookingEntity {
   cancellationReason: string | null;
   cancelledByUserId: string | null;
 
-  // Driver / vehicle (set by Dispatch in A4d).
+  // Driver / vehicle (set by Dispatch in A4c).
   driverId: string | null;
   vehicleId: string | null;
+
+  // Dispatch metadata (A4c). Worker maintains these.
+  dispatchAttempts: number;
+  lastDispatchAt: Date | null;
+  dispatchFailedReason: string | null;
 
   version: number;
   createdAt: Date;
