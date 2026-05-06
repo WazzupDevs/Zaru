@@ -5,7 +5,7 @@ facing iOS/Android app — düğün/etkinlik müşterisi browse + book akışın
 buradan yapacak. Driver app (`apps/driver-mobile/`) A4f'de gelecek
 ayrı bundle.
 
-## A4d-1 + A4d-2 kapsamı (mevcut)
+## A4d-1 + A4d-2 + A4d-3 kapsamı (mevcut, A4d TAMAMLANDI)
 
 **A4d-1** (auth scaffolding):
 
@@ -32,23 +32,72 @@ ayrı bundle.
   booking shapes); ~10–15 KB gzipped accepted in exchange for drift
   detection at first parse
 
-## A4d-3'e devredilenler (sıradaki oturum)
+**A4d-3** (polish — bu oturum):
 
-- Native datetime picker (`@react-native-community/datetimepicker`) —
-  şu an manuel `YYYY-MM-DD HH:mm` input
-- Maps autocomplete + route preview — şu an `lib/constants.ts`'te
-  Sultanahmet → Beşiktaş placeholder coords
-- Real brand identity (renk + tipografi + ikon paketi); lucide-
-  react-native vector icons (şu an emoji placeholder)
-- Splash + app icon assets (Expo default kullanıyor)
-- Push notifications (Expo Push token registration + handler)
-- Component test suite (Jest + jest-expo + @testing-library/react-native)
-- Detox / Maestro e2e
+- Native datetime picker (`@react-native-community/datetimepicker` 8.2.0)
+  — iOS modal w/ "Tamam" + Android default modal
+- Lucide vector icons (`lucide-react-native` + `react-native-svg` 15.8.0)
+  — `src/components/Icon.tsx` barrel; tab navigator + ErrorView +
+  BookingCard status badges
+- Jest + jest-expo + @testing-library/react-native — 12 smoke component
+  tests. Vitest pure logic için kalır.
+- `src/lib/logger.ts` PII redaction ile (phone/token/recipient/password/
+  secret keys son-4 yıldıza maskelenir, `Logger.debug` prod'da no-op)
+- `@babel/runtime` direkt dep (RN babel transform require eder)
 
-## A4f / A4g
+## A4e-3'e ertelendi (push registration)
 
-- A4f: `apps/driver-mobile/` (sürücü tarafı, ayrı app)
-- A4g: EAS Build setup (real `eas.json` + projectId, production build)
+- Backend: `User.expoPushToken` + `pushTokenUpdatedAt` (Prisma migration),
+  `UpdatePushTokenUseCase`, `PATCH /users/me/push-token`,
+  shared-types `UpdatePushTokenInputSchema`
+- Mobile: `expo-notifications`, `PushTokenService`, AuthContext'te
+  verifyOtp sonrası registration, foreground notification handler
+- Sebep: backend değişikliği (migration + use case + endpoint + push
+  sender e2e) kendi oturumunu hak ediyor
+
+## A4g (production deploy + brand)
+
+- Real EAS Build setup (`eas init`, real projectId, eas.json profiles)
+- Maps autocomplete + route preview
+- Real brand identity (renk + tipografi + splash + app icon assets +
+  vehicleType fotoğrafları)
+- Brand SVG icon set (custom, lucide ile yan yana)
+
+## A4f
+
+- `apps/driver-mobile/` — sürücü tarafı, ayrı bundle
+
+## Mutlaka uyulacak yeni kurallar (A4d-3)
+
+### Icon kullanımı
+
+Tüm icon'lar `src/components/Icon.tsx` üstünden gelir (`Icons.Home`,
+`Icons.Car`, vs). Lucide'i direkt import etme — barrel pattern tree-
+shaking + library-swap (A4g brand SVG'ler) için zorunlu.
+
+### Logger (PII redaction)
+
+`Logger.info/warn/error/debug` kullan, `console.*` hayır. PII otomatik
+maskelenir (`/phone|recipient|password|token|secret/i` key pattern).
+Production'da `Logger.debug` no-op. Yeni catch block'larda silently
+yutma — Logger.warn ile en azından dev'de görünür yap.
+
+### Jest vs vitest
+
+- **vitest** = pure logic (storage, API client, bootstrap, formatters,
+  logger). Hızlı, native shim yok.
+- **jest** (`pnpm test:components`) = react-native bileşeni render
+  edenler. jest-expo preset + babel transform + RN/Expo native module
+  mocks gerektirir.
+- Yeni component test'i ekleyeceksen `__tests__/<Name>.test.tsx` altında
+  (jest.config testMatch ile yakalar).
+
+### DateTimePicker platform UX
+
+Android'de RN-DateTimePicker tek `onChange` ile open+set+close yapar
+(type="set" commit, type="dismissed" cancel — ikisinde de modal'ı
+biz kapatırız). iOS'ta inline wheel + Modal wrapper + "Tamam" butonu
+zorunlu (iOS'ta sistem-modal yok).
 
 ## Mutlaka uyulacak yeni kurallar (A4d-2)
 
