@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { createCatalogApi, type ServiceCategoryDetail } from "../lib/api/catalog";
-import { createApiClient } from "../lib/api/client";
+import { catalogApi } from "../lib/api";
+import { type ServiceCategoryDetail } from "../lib/api/catalog";
 import { ApiError, NetworkError } from "../lib/api/errors";
-import { clearSession, getTokens, setTokens } from "../lib/storage/secure-token-storage";
 
 export interface UseCategoryResult {
   data: ServiceCategoryDetail | null;
@@ -11,17 +10,6 @@ export interface UseCategoryResult {
   error: string | null;
   refetch: () => Promise<void>;
 }
-
-// Module-scope catalog API. Building one ApiClient at module load is fine
-// — the constructor is just a closure factory, no network or SecureStore
-// access happens until `.request()` is invoked. We share a single instance
-// across all hooks (single-flight refresh works at the client level, so
-// reusing keeps the de-dup window honest).
-const catalogApi = createCatalogApi(
-  createApiClient({
-    hooks: { getTokens, setTokens, clearTokens: clearSession },
-  }),
-);
 
 /**
  * Hand-rolled fetch + state pattern (no react-query). Mobile's surface
