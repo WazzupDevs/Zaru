@@ -1,70 +1,67 @@
 import { router } from "expo-router";
-import { useCallback, useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { Button } from "../../src/components/Button";
+import { ErrorView } from "../../src/components/ErrorView";
+import { FullScreenLoading } from "../../src/components/FullScreenLoading";
+import { VehicleTypeCard } from "../../src/components/VehicleTypeCard";
 import { useAuth } from "../../src/hooks/use-auth";
-import { formatTrMobileForDisplay } from "../../src/lib/format/phone";
+import { useCategory } from "../../src/hooks/use-category";
+import { CATEGORY_SLUGS } from "../../src/lib/constants";
 
 export default function HomeScreen() {
-  const { state, logout } = useAuth();
-  const [loggingOut, setLoggingOut] = useState(false);
+  const { state } = useAuth();
+  const { data, loading, error, refetch } = useCategory(CATEGORY_SLUGS.WEDDING_CAR);
 
-  const handleLogout = useCallback(async () => {
-    setLoggingOut(true);
-    try {
-      await logout();
-    } finally {
-      setLoggingOut(false);
-    }
-  }, [logout]);
-
-  if (state.status !== "authenticated") {
-    // The root index.tsx redirect should keep us out of here when
-    // unauthenticated, but the type narrowing requires the guard.
-    return null;
+  if (loading) return <FullScreenLoading message="Araçlar yükleniyor..." />;
+  if (error || !data) {
+    return (
+      <ErrorView
+        message={error ?? "Veri yok"}
+        onRetry={() => {
+          void refetch();
+        }}
+      />
+    );
   }
+
+  if (state.status !== "authenticated") return null;
 
   return (
     <SafeAreaView className="flex-1 bg-brand-surface">
-      <View className="flex-1 px-6 py-8">
-        <View className="flex-row items-start justify-between">
-          <View className="flex-1">
-            <Text className="text-2xl font-bold text-brand-primary">
-              Hoş geldiniz{state.user.displayName !== null ? `, ${state.user.displayName}` : ""}
-            </Text>
-            <Text className="mt-1 text-sm text-brand-muted">
-              {formatTrMobileForDisplay(state.user.phoneE164)}
-            </Text>
-          </View>
-          <Pressable
-            onPress={() => {
-              router.push("/(app)/profile");
-            }}
-            className="h-10 w-10 items-center justify-center rounded-full bg-brand-primary"
-          >
-            <Text className="text-base font-semibold text-brand-accent">
-              {(state.user.displayName ?? state.user.phoneE164).charAt(0).toUpperCase()}
-            </Text>
-          </Pressable>
+      <ScrollView contentContainerClassName="pb-12">
+        <View className="px-6 pt-4">
+          <Text className="text-3xl font-bold text-brand-primary">{data.name}</Text>
+          {data.description !== null && (
+            <Text className="mt-2 text-base text-brand-muted">{data.description}</Text>
+          )}
+          {!state.verified && (
+            <View className="mt-3 rounded-lg bg-amber-50 px-3 py-2">
+              <Text className="text-xs text-amber-700">
+                Bağlantı bekleniyor — gösterilen bilgiler önbellekten.
+              </Text>
+            </View>
+          )}
         </View>
 
-        <View className="mt-12 flex-1 items-center justify-center">
-          <Text className="text-center text-base text-brand-muted">
-            Müşteri rezervasyon akışı bir sonraki oturumda (A4d-2) gelecek.
-          </Text>
+        <View className="mt-6 gap-4 px-6">
+          {data.vehicleTypes.length === 0 ? (
+            <Text className="text-center text-base text-brand-muted">
+              Şu anda uygun araç tipi yok.
+            </Text>
+          ) : (
+            data.vehicleTypes.map((vt) => (
+              <VehicleTypeCard
+                key={vt.id}
+                vehicleType={vt}
+                onPress={() => {
+                  router.push(`/(app)/vehicle/${vt.id}`);
+                }}
+              />
+            ))
+          )}
         </View>
-
-        <Button
-          label="Çıkış Yap"
-          variant="ghost"
-          onPress={() => {
-            void handleLogout();
-          }}
-          loading={loggingOut}
-        />
-      </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
