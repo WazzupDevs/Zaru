@@ -88,3 +88,88 @@ export async function setupCatalogFixtures(prisma: PrismaClient): Promise<{
 
   return { categoryId: category.id, vehicleTypeId: vehicleType.id };
 }
+
+/**
+ * Pricing data on top of the catalog fixture — needed by Booking,
+ * Dispatch, and Notifications integration specs that walk a real
+ * customer-quote-confirm flow. Mirrors the wedding-car shape from
+ * `prisma/seed.ts` (one PricingProfile + the seasonal/weekend rules)
+ * so the smoke-tested 6877.00 TRY case still pins.
+ */
+export async function setupPricingFixtures(
+  prisma: PrismaClient,
+  vehicleTypeId: string,
+): Promise<void> {
+  await prisma.pricingProfile.upsert({
+    where: { vehicleTypeId },
+    create: {
+      vehicleTypeId,
+      baseFee: "3000.00",
+      perKmFee: "15.00",
+      perHourFee: "200.00",
+      minimumHours: 4,
+      includedKm: 50,
+    },
+    update: {
+      baseFee: "3000.00",
+      perKmFee: "15.00",
+      perHourFee: "200.00",
+      minimumHours: 4,
+      includedKm: 50,
+      isActive: true,
+    },
+  });
+
+  // Fixed UUIDs so re-seeding across suites is a true no-op.
+  const seasonalRuleId = "11111111-1111-4111-8111-111111111111";
+  const weekendRuleId = "22222222-2222-4222-8222-222222222222";
+
+  await prisma.pricingRule.upsert({
+    where: { id: seasonalRuleId },
+    create: {
+      id: seasonalRuleId,
+      type: "SEASONAL_MULTIPLIER",
+      name: "Yaz Sezonu",
+      description: "Mayıs–Eylül zammı (%30)",
+      validFrom: new Date("2026-05-01"),
+      validTo: new Date("2026-09-30"),
+      multiplier: "1.30",
+      sortOrder: 10,
+    },
+    update: { isActive: true },
+  });
+
+  await prisma.pricingRule.upsert({
+    where: { id: weekendRuleId },
+    create: {
+      id: weekendRuleId,
+      type: "DAY_OF_WEEK_MULTIPLIER",
+      name: "Hafta Sonu",
+      description: "Cmt + Pzr zammı (%15)",
+      // Bitmask: 32 (Cmt) | 64 (Pzr) = 96
+      daysOfWeek: 96,
+      multiplier: "1.15",
+      sortOrder: 20,
+    },
+    update: { isActive: true },
+  });
+
+  // Optional ADDON — pricing integration spec opts customers in.
+  const trimAddonId = "33333333-3333-4333-8333-333333333333";
+  await prisma.pricingRule.upsert({
+    where: { id: trimAddonId },
+    create: {
+      id: trimAddonId,
+      type: "ADDON",
+      name: "Düğün Süslemesi",
+      description: "Çelenk, gelin tülü ve dış süsleme",
+      fixedAmount: "500.00",
+      isOptional: true,
+      sortOrder: 30,
+    },
+    update: { isActive: true },
+  });
+}
+
+/** Stable id of the trim addon seeded by setupPricingFixtures. */
+export const TRIM_ADDON_RULE_ID = "33333333-3333-4333-8333-333333333333";

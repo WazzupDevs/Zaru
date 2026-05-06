@@ -98,7 +98,11 @@ export class ConfirmBookingUseCase {
         customerId: booking.customerId,
         vehicleTypeId: booking.vehicleTypeId,
         categoryId: booking.categoryId,
-        totalAmount: booking.totalAmount.toString(),
+        // Always-2-decimal-place serialization. Decimal.toString() drops
+        // trailing zeros, so route through Number → toFixed(2) so the
+        // event payload feeds notification templates with a stable
+        // "6877.00" shape regardless of what the DB returned.
+        totalAmount: Number(booking.totalAmount.toString()).toFixed(2),
         currency: booking.currency,
         eventStartAt: booking.eventStartAt.toISOString(),
         eventEndAt: booking.eventEndAt.toISOString(),

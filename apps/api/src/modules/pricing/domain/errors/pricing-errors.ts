@@ -34,7 +34,11 @@ export class QuoteNotFoundError extends DomainError {
 
 export class QuoteExpiredError extends DomainError {
   readonly code = "PRICING_QUOTE_EXPIRED";
-  readonly httpStatus = 410;
+  // 409 not 410: an expired quote is a current-state mismatch (the
+  // caller can ask for a fresh quote on the same endpoint), not a
+  // permanent removal of a resource. Aligns with QuoteAlreadyConsumed
+  // — both are retryable-after-fresh-quote errors. RFC 7231 § 6.5.8.
+  readonly httpStatus = 409;
   constructor() {
     super("Price quote has expired. Request a fresh quote.");
   }

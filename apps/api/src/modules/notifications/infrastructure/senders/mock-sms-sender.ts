@@ -39,12 +39,26 @@ export class MockSmsSender implements SmsSenderPort {
   // static helpers for the e2e import path.
   private static globalInbox: MockSmsRecord[] = [];
 
+  // Failure injection for retry/DLQ tests. When >0, the next N sends
+  // throw before recording. failAlways forces every send to throw
+  // (overrides the counter). A4-Stab integration specs use these.
+  private failNextN = 0;
+  private failAlways = false;
+
   constructor(
     @InjectPinoLogger(MockSmsSender.name)
     private readonly logger: PinoLogger,
   ) {}
 
   send(input: SmsSendInput): Promise<SmsSendResult> {
+    if (this.failAlways || this.failNextN > 0) {
+      if (this.failNextN > 0) this.failNextN -= 1;
+      this.logger.debug(
+        { event: "mock_sms_forced_failure", recipientPhone: input.phone },
+        "[MOCK SMS] simulated failure",
+      );
+      return Promise.reject(new Error("mock sms failure"));
+    }
     const providerMessageId = `mock-${randomUUID()}`;
     const sentAt = new Date();
     const record: MockSmsRecord = {
@@ -67,6 +81,22 @@ export class MockSmsSender implements SmsSenderPort {
       "[MOCK SMS] sent",
     );
     return Promise.resolve({ providerMessageId, sentAt });
+  }
+
+  /** Make the next `count` sends throw. Used by retry tests. */
+  failNext(count: number): void {
+    this.failNextN = count;
+  }
+
+  /** Force every send to throw until clearFailure(). Used by DLQ tests. */
+  failAll(): void {
+    this.failAlways = true;
+  }
+
+  /** Reset both failure modes. */
+  clearFailure(): void {
+    this.failNextN = 0;
+    this.failAlways = false;
   }
 
   /** Test/smoke helper. */
