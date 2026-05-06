@@ -16,6 +16,7 @@ import {
   DEFAULT_DROPOFF_COORDS,
   DEFAULT_PICKUP_COORDS,
 } from "../../src/lib/constants";
+import { Logger } from "../../src/lib/logger";
 
 function defaultEventStart(): Date {
   // 7 days from now at 14:00 — sensible default the user can edit.
@@ -63,9 +64,14 @@ export default function QuoteScreen() {
       .then((rules) => {
         if (!cancelled) setAddons(rules);
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         // Addon load failure isn't fatal — user can still get a quote
-        // without any addons selected. Silent fallback.
+        // without any addons selected. Log so it's visible in dev /
+        // future error tracking, then continue.
+        Logger.warn("addon_load_failed", {
+          vehicleTypeId,
+          message: err instanceof Error ? err.message : String(err),
+        });
       });
     return () => {
       cancelled = true;
