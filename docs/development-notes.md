@@ -8,6 +8,100 @@
 
 ---
 
+## 2026-05-06 — Session A4d-1 (mobile auth)
+
+### React 18 vs 19 type collision in mixed-version monorepo
+
+Admin uses React 19 + @types/react 19; mobile uses React 18 (RN 0.76 only
+accepts React 18). pnpm hoisting routes both versions through `.pnpm/`
+and TS in mobile picks up @types/react@19 via transitive resolution,
+breaking JSX with `bigint is not assignable to ReactNode` (React 19
+extended ReactNode).
+
+Two-part fix:
+
+1. **pnpm.overrides scoped to mobile** — `@event-fleet/customer-mobile>
+@types/react: ~18.3.12` and same for `@types/react-dom`. Doesn't pin
+   indirect deps but covers mobile's direct devDependency. Admin keeps
+   React 19 untouched.
+
+2. **tsconfig `paths` redirect** — `react` and `react/*` mapped to
+   `./node_modules/@types/react`. This forces TS module resolution
+   through the mobile-local types regardless of which transitive package
+   imported `react`. The combination of (1) + (2) is what unblocked the
+   mobile typecheck.
+
+Don't try `**` chain selectors in pnpm.overrides — pnpm 9 rejects them
+with `ERR_PNPM_INVALID_SELECTOR`.
+
+### `react-helmet-async` drags in `react-dom@19` if mobile doesn't pin it
+
+expo-router → react-helmet-async (peer `react-dom ^16 || ^17 || ^18`).
+If mobile doesn't list `react-dom@18.3.1` directly, pnpm hoists admin's
+react-dom@19 to satisfy that peer, and from there @types/react-dom@19 →
+@types/react@19 chain re-opens. Pin `react-dom@18.3.1` AND
+`@types/react-dom@~18.3.0` in mobile's deps.
+
+### `eslint-config-expo` 8.0.1 has no flat export
+
+ESLint 9 wants flat config; expo's preset still ships legacy `.eslintrc`.
+Bridging via `@eslint/eslintrc` FlatCompat brings in `eslint-plugin-react-hooks`
+4.x which breaks against ESLint 9. Easier: minimal flat config in
+`apps/customer-mobile/eslint.config.js` until upstream ships flat.
+Revisit at A4d-3 polish.
+
+### Tailwind config must be `.js` not `.ts` (in this repo)
+
+Root `lint-staged` runs eslint with `@typescript-eslint/no-require-imports`
+on every `.ts` file. NativeWind v4 ships its preset as CJS only
+(`require("nativewind/preset")`), so a `tailwind.config.ts` always
+trips the rule. Use `.js` with a JSDoc `@type` comment for the Config
+typing — same DX, no rule fight.
+
+### `babel-preset-expo` + NativeWind v4 = no extra babel plugins
+
+In SDK 50+ both `nativewind/babel` and `expo-router/babel` are folded
+into `babel-preset-expo`. Listing them explicitly produces duplicate-
+transform warnings. Keep `babel.config.js` to a single preset:
+
+```js
+presets: [["babel-preset-expo", { jsxImportSource: "nativewind" }]];
+```
+
+### Vitest scope on the mobile app
+
+Mobile vitest tests **pure logic only** — storage wrapper, API client,
+bootstrap, format helpers. RN component rendering goes through Jest +
+jest-expo (deferred to A4d-3). The split keeps vitest fast (no native
+shims to load) and lets `pnpm test` still mean "the standard suite".
+
+`expo-secure-store` and `expo-constants` are mocked from
+`src/test/setup.ts` because vitest's node environment can't load their
+native bindings.
+
+### Async handlers + RN Pressable
+
+`@typescript-eslint/no-misused-promises` (root config) flags
+`onPress={asyncHandler}` because `onPress` types its callback as
+returning `void`, not `Promise<void>`. Wrap every async handler:
+
+```tsx
+<Pressable onPress={() => { void handleLogout(); }}>
+```
+
+Same wrapping for `onSubmitEditing`, `onChange` callbacks, etc. Tedious
+but cheap to retrofit and keeps ESLint catching real misuse elsewhere.
+
+### Expo + `useEffect` cleanup `cancelled` flag
+
+ESLint's `no-unnecessary-condition` doesn't see across the closure
+boundary that `let cancelled` is mutated in the cleanup callback. The
+check (`if (cancelled) return`) is real — without it, fast HMR unmount
+calls setState on an unmounted provider. Suppress with a one-line
+`eslint-disable-next-line` + a comment explaining the closure mutation.
+
+---
+
 ## 2026-04-23 — Session A2b
 
 ### Yeni root-level `.ts` config dosyası eklediğinizde

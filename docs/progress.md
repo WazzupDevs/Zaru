@@ -2140,6 +2140,147 @@ düzeltildi.
 - A4c-payment: iyzico Marketplace adapter
 - A5+: live Netgsm staging + DLQ Slack alert + push spec genişletme
 
+---
+
+## 2026-05-06 — Session A4d-1: Customer Mobile App — Expo Scaffolding + Auth Flow
+
+### Done
+
+Yeni paket: `apps/customer-mobile/` — Expo SDK 52 + RN 0.76 + Expo Router
+v4 + NativeWind v4. Branch `feat/mobile-auth` (9 commit hedefli).
+
+**G1** — Expo iskelet + monorepo wiring
+
+- `package.json`, `app.config.ts` (bundle id `com.eventfleet.app`, EAS
+  projectId placeholder A4g'ye kadar), `metro.config.js` monorepo
+  watchFolders + nodeModulesPaths, single `babel-preset-expo` preset
+  (NativeWind v4 jsxImportSource integrated; `nativewind/babel` ve
+  `expo-router/babel` SDK 50+'ten beri preset'e katlandı, eklenmiyor)
+- pnpm install: 2m6s, 105+ packages, 1 known peer warning
+  (eslint-plugin-react-hooks 4 vs eslint 9 — pratikte çalışır)
+
+**G2** — NativeWind v4 + Expo Router groups + brand palette
+
+- Brand placeholder: `#1a1a1a` primary + `#d4af37` accent + `#fafafa`
+  surface (Mercedes-vintage wedding-car visual world). Token names
+  stable; A4d-3 swap eder hex'leri
+- `(auth)/{phone,verify}` + `(app)/{index,profile}` route groups
+- Root layout: GestureHandler + SafeArea + Stack `headerShown: false`
+
+**G3a** — SecureStore token storage (TEST-FIRST, 6 test)
+
+- Self-healing corruption guard: malformed JSON / shape mismatch →
+  null + auto-wipe. Bir kez bozulan keystore cold-start'ı brick etmez
+
+**G3b** — API client + auth endpoints (TEST-FIRST, 12 test)
+
+- Single-flight refresh: 5 paralel 401 → 1 POST /auth/tokens/refresh
+  (rotation-safe). pendingRefresh promise client closure'unda yaşar
+- 401 retry exactly once → infinite-loop yok. Refresh fail →
+  clearTokens + onAuthFailure + AuthExpiredError throw
+- Tested: bearer, anonymous, NetworkError, ApiError, refresh-replay,
+  single-flight 5=1, failed-refresh, no-loop, no-refresh-no-tokens
+
+**G4** — Auth bootstrap (saf fonksiyon) + Context (6 test)
+
+- `bootstrap.ts` 4 outcome: no-session / authenticated / expired /
+  offline. **Offline kritik**: NetworkError veya 5xx tokens silmez
+  (airplane-mode launch logout etmesin)
+- AuthProvider state machine: bootstrapping/unauthenticated/
+  authenticated. `cancelledRef` ile fast-unmount setState guard
+
+**G5** — UI primitives + TR phone format (16 test)
+
+- Button (primary/secondary/ghost), Input (label/error/hint),
+  OtpInput (6-digit auto-advance + paste-six + iOS sms-otp autofill),
+  FullScreenLoading
+- `lib/format/phone.ts` display layer; PhoneE164Schema (shared-types)
+  validation authority. Zod NOT shipped to mobile bundle (~30KB saved)
+
+**G6** — Auth screens
+
+- `(auth)/phone.tsx` — TR format-while-typing, ApiError inline, 30s
+  resend cooldown
+- `(auth)/verify.tsx` — auto-submit on 6th digit, replace-not-push so
+  back doesn't return to (auth)
+- `(app)/{index,profile}.tsx` — placeholder home + read-only profile
+
+**G7** — Module CLAUDE.md + dev-notes
+
+- `apps/customer-mobile/CLAUDE.md` — 4 disiplin kuralı (token, API
+  client, bootstrap, phone), test scope split, TS paths workaround
+- `docs/development-notes.md` — 7 yeni gotcha (React 18/19 collision,
+  react-helmet-async transitive trap, eslint-config-expo flat yok,
+  .ts vs .js tailwind config, babel-preset-expo only, vitest scope,
+  async handler wrapping)
+
+### Test sonuçları
+
+| Komut                                                  | Sonuç                       |
+| ------------------------------------------------------ | --------------------------- |
+| `pnpm --filter @event-fleet/customer-mobile typecheck` | ✓                           |
+| `pnpm --filter @event-fleet/customer-mobile lint`      | ✓                           |
+| `pnpm --filter @event-fleet/customer-mobile test`      | **49/49 PASS** in 1.5s      |
+| `pnpm --filter @event-fleet/admin typecheck`           | ✓ (override scoped, sağlam) |
+
+### Plandan sapmalar (gerekçeli)
+
+| Sapma                                                             | Gerekçe                                                                                                                            |
+| ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/mobile/` → `apps/customer-mobile/`                          | Brief'te yanlıştı; CLAUDE.md repo planında customer + driver ayrı bundle (Apple/Google ayrı listing, farklı UX, ayrı update cycle) |
+| Brand: lacivert+amber önerisi → **siyah+gold** (kullanıcı kararı) | Düğün/etkinlik sektörü için fintech tonu yanlış; Mercedes-vintage paleti uygun                                                     |
+| EAS projectId placeholder UUID                                    | A4g'ye kadar real `eas init` çıktısı yok; placeholder dev workflow'u engellemez                                                    |
+| `eslint-config-expo` flat export yok → minimal local flat config  | 8.0.1'de hâlâ legacy `.eslintrc`; FlatCompat bridge react-hooks 4'ü çekiyor, ESLint 9'la kırılıyor; A4d-3 polish revisit           |
+| Component test'leri (Jest+jest-expo) deferred A4d-3               | Brief TEST-FIRST'ı G3'e yönlendirmişti — storage + API client + bootstrap üçü pure logic, vitest ile karşılandı                    |
+| `tailwind.config.ts` → `.js`                                      | Root lint-staged `no-require-imports` `.ts` dosyasında firing; nativewind/preset CJS-only require zorluyor                         |
+| Offline cold-start → unauthenticated (G4 React layer)             | User cache için storage extension lazım, A4d-2'de gelecek                                                                          |
+
+### Karşılaşılan sürpriz: React 18 vs 19 type collision
+
+Admin React 19 kullanıyor, RN 0.76 zorunlu React 18. pnpm hoisting
+mobile'a @types/react@19'u sızdırıyordu (`bigint is not assignable to
+ReactNode` JSX hatası). İki katmanlı çözüm:
+
+1. `pnpm.overrides` `@event-fleet/customer-mobile>@types/react: ~18.3.12`
+   ve `@types/react-dom: ~18.3.0` (mobile'a scoped, admin etkilenmiyor)
+2. `tsconfig.json#paths` `react` ve `react/*` → mobile-local @types/react
+
+Asıl tetikçi: `react-helmet-async` (expo-router peer) `react-dom`
+istiyor; mobile'da yoksa pnpm admin'in 19'unu hoist ediyor → @types/
+react-dom@19 → @types/react@19 zinciri. `react-dom@18.3.1` mobile'a
+explicit pin'lendi.
+
+### Final commit listesi (branch)
+
+| #   | Commit  | Konu                                                                              |
+| --- | ------- | --------------------------------------------------------------------------------- |
+| 1   | cdfbf27 | feat(customer-mobile): scaffold expo sdk 52 + monorepo wiring                     |
+| 2   | 513cbc7 | feat(customer-mobile): wire nativewind v4 + expo router groups + brand palette    |
+| 3   | 85ff18e | feat(customer-mobile): add SecureStore token storage with self-healing corruption |
+| 4   | 6e0e911 | feat(customer-mobile): add API client with single-flight refresh + auth wrappers  |
+| 5   | 97ae3a2 | feat(customer-mobile): add auth bootstrap + provider + redirect wiring            |
+| 6   | b98b9bf | feat(customer-mobile): add UI primitives + TR phone format helpers                |
+| 7   | 744d1b2 | feat(customer-mobile): add auth flow screens (phone → otp → home → profile)       |
+| 8   | 87918da | docs(customer-mobile): add module CLAUDE.md + dev-notes section A4d-1             |
+| 9   | (bu)    | docs: log session a4d-1 progress                                                  |
+
+### Pending (A4d-2'ye aktarılan)
+
+- Cached user in storage (offline cold-start optimistic render)
+- Booking flow (kategori seç → Quote → confirm)
+- Booking listesi + detay
+- Push notifications (Expo Push registration + handler)
+- Component test setup (Jest + jest-expo + RTL)
+- Real brand identity + splash/icon assets (A4d-3)
+- EAS Build setup (A4g)
+
+### Next
+
+- **A4d-2 mobile booking flow**: müşteri kategori seç → quote al →
+  confirm. Bu oturumun shippable çıktısı + push token registration.
+- A4f: `apps/driver-mobile/` (sürücü tarafı, ayrı bundle)
+- A4c-payment: iyzico Marketplace adapter
+
 <!--
 Şablon (yeni oturum buradan başlasın):
 
