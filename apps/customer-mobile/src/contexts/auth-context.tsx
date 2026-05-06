@@ -10,11 +10,13 @@ import {
 
 import { createAuthApi, type AuthApi, type AuthUserSummary } from "../lib/api/auth";
 import { createApiClient, type ApiClient } from "../lib/api/client";
-import { bootstrapAuth, type BootstrapResult } from "../lib/auth/bootstrap";
+import { bootstrapAuth, validateSession } from "../lib/auth/bootstrap";
 import {
-  clearTokens as clearStoredTokens,
-  getTokens as getStoredTokens,
-  setTokens as setStoredTokens,
+  clearSession,
+  getSession,
+  getTokens,
+  setSession,
+  setTokens,
   type StoredTokens,
 } from "../lib/storage/secure-token-storage";
 
@@ -22,18 +24,22 @@ import {
  * Auth state machine — three observable states:
  *
  *   bootstrapping
- *     Cold start in flight. Render the splash screen. Routes are not
- *     yet allowed to redirect.
+ *     The initial SecureStore read is in flight (microsecond window).
+ *     Render the splash screen. Routes are not yet allowed to redirect.
  *
  *   unauthenticated
- *     Either no tokens were stored, or refresh failed mid-session.
+ *     No cached session OR background validate returned `expired`.
  *     Routes redirect to (auth)/phone.
  *
  *   authenticated
- *     getMe() succeeded OR we're optimistically authenticated from a
- *     stored session that we couldn't verify yet (offline cold start).
- *     `verified` flag distinguishes the two so the home screen can
- *     show an "offline — bağlantı bekleniyor" banner if it wants.
+ *     We have a user object to render. `verified` distinguishes:
+ *       false → cached, background `/auth/me` still in flight (or it
+ *               came back `offline`, in which case we keep showing the
+ *               cached UI and hope the next call succeeds).
+ *       true  → server confirmed the session and the user object is
+ *               either unchanged or freshly synced from the API.
+ *     Screens that want to show an "offline — bağlantı bekleniyor"
+ *     badge can read this flag.
  */
 export type AuthState =
   | { status: "bootstrapping" }
@@ -43,7 +49,7 @@ export type AuthState =
 export interface AuthContextValue {
   state: AuthState;
   authApi: AuthApi;
-  /** Called from VerifyOtpScreen after successful otp/verify. */
+  /** Called from VerifyOtpScreen after a successful otp/verify. */
   login: (tokens: StoredTokens, user: AuthUserSummary) => Promise<void>;
   logout: () => Promise<void>;
 }
@@ -52,11 +58,6 @@ export const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>({ status: "bootstrapping" });
-
-  // The API client + authApi must be stable across renders so screens
-  // memoising on them don't churn. They also need a callback into our
-  // setState (for the onAuthFailure path), which is why we build them
-  // here rather than at module scope.
   const stateRef = useRef<AuthState>(state);
   stateRef.current = state;
 
@@ -64,13 +65,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     () =>
       createApiClient({
         hooks: {
-          getTokens: getStoredTokens,
-          setTokens: setStoredTokens,
-          clearTokens: clearStoredTokens,
+          getTokens,
+          setTokens,
+          clearTokens: clearSession,
           onAuthFailure: () => {
-            // Forced logout from inside the API client (refresh failed).
-            // Only transition if we're currently considered authenticated;
-            // bootstrapping/unauthenticated already handle this themselves.
             if (stateRef.current.status === "authenticated") {
               setState({ status: "unauthenticated" });
             }
@@ -82,49 +80,73 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const authApi: AuthApi = useMemo(() => createAuthApi(apiClient), [apiClient]);
 
-  // Cold-start bootstrap. Runs exactly once per app process.
-  // Cancellation flag lives in a ref so ESLint's no-unnecessary-condition
-  // can see that the cleanup callback mutates it (a `let cancelled` flag
-  // confuses the analyzer across the IIFE closure boundary). Without this
-  // guard a fast unmount (HMR) would setState on an unmounted provider.
+  // Cancellation flag in a ref so ESLint sees the cleanup mutation.
+  // Prevents setState on an unmounted provider during fast HMR cycles.
   const cancelledRef = useRef(false);
   useEffect(() => {
     cancelledRef.current = false;
+
     void (async () => {
-      const result: BootstrapResult = await bootstrapAuth({
-        getStoredTokens,
-        clearStoredTokens,
-        authApi,
-      });
+      // Step 1 — instant cached render. Whatever's in SecureStore goes
+      // straight into state with verified=false.
+      const cold = await bootstrapAuth({ getStoredSession: getSession });
+      // ESLint can't see that the cleanup callback below mutates this
+      // ref across the closure boundary, so it flags the read as always
+      // false. The check is real — without it a fast unmount (HMR)
+      // would setState on an unmounted provider.
+
       if (cancelledRef.current) return;
-      switch (result.kind) {
-        case "no-session":
-        case "expired":
-        case "offline":
-          // Offline path: bootstrap couldn't reach the API to fetch the
-          // user summary, so we have nothing to render in the (app) tree.
-          // For G4 we degrade to unauthenticated; A4d-2 caches the user
-          // alongside tokens so offline cold-starts can render the home
-          // screen optimistically.
-          setState({ status: "unauthenticated" });
-          break;
-        case "authenticated":
-          setState({ status: "authenticated", user: result.user, verified: true });
-          break;
+
+      if (cold.kind === "no-session") {
+        setState({ status: "unauthenticated" });
+        return;
       }
+
+      setState({ status: "authenticated", user: cold.session.user, verified: false });
+
+      // Step 2 — background validate. The API client's 401 auto-refresh
+      // sits between this call and the network; we only see
+      // AuthExpiredError if refresh itself died.
+      const validated = await validateSession({ authApi, cachedUser: cold.session.user });
+      // ESLint can't see that the cleanup callback below mutates this
+      // ref across the closure boundary, so it flags the read as always
+      // false. The check is real — without it a fast unmount (HMR)
+      // would setState on an unmounted provider.
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+      if (cancelledRef.current) return;
+
+      if (validated.kind === "expired") {
+        await clearSession();
+        setState({ status: "unauthenticated" });
+        return;
+      }
+
+      if (validated.kind === "offline") {
+        // Keep the cached state — verified stays false. Future API calls
+        // (e.g., bookings list) will surface the real status.
+        return;
+      }
+
+      // valid: persist if the user object actually changed (avoid a
+      // no-op SecureStore write + state churn on every cold start).
+      if (validated.userChanged) {
+        await setSession({ tokens: cold.session.tokens, user: validated.user });
+      }
+      setState({ status: "authenticated", user: validated.user, verified: true });
     })();
+
     return () => {
       cancelledRef.current = true;
     };
   }, [authApi]);
 
   const login = useCallback(async (tokens: StoredTokens, user: AuthUserSummary) => {
-    await setStoredTokens(tokens);
+    await setSession({ tokens, user });
     setState({ status: "authenticated", user, verified: true });
   }, []);
 
   const logout = useCallback(async () => {
-    await clearStoredTokens();
+    await clearSession();
     setState({ status: "unauthenticated" });
   }, []);
 
