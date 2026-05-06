@@ -1,0 +1,54 @@
+{
+  "name": "@event-fleet/customer-mobile",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Event Fleet Platform — customer mobile app (Expo SDK 52, React Native, Expo Router).",
+  "main": "index.ts",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "lint": "eslint . --max-warnings=0",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "rm -rf .expo dist node_modules .turbo"
+  },
+  "dependencies": {
+    "@event-fleet/shared-types": "workspace:*",
+    "expo": "~52.0.0",
+    "expo-constants": "~17.0.0",
+    "expo-linking": "~7.0.0",
+    "expo-router": "~4.0.0",
+    "expo-secure-store": "~14.0.0",
+    "expo-splash-screen": "~0.29.0",
+    "expo-status-bar": "~2.0.0",
+    "expo-system-ui": "~4.0.0",
+    "nativewind": "^4.1.20",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-native": "0.76.3",
+    "react-native-gesture-handler": "~2.20.2",
+    "react-native-reanimated": "~3.16.1",
+    "react-native-safe-area-context": "4.12.0",
+    "react-native-screens": "~4.1.0",
+    "tailwindcss": "^3.4.17",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.25.0",
+    "@event-fleet/config-ts": "workspace:*",
+    "@types/node": "^20.17.0",
+    "@types/react": "~18.3.12",
+    "@typescript-eslint/parser": "^8.20.0",
+    "babel-preset-expo": "~12.0.0",
+    "eslint": "^9.17.0",
+    "typescript": "5.6.3",
+    "vitest": "^2.1.0"
+  },
+  "engines": {
+    "node": "20.18.0",
+    "pnpm": "9.15.0"
+  }
+}
