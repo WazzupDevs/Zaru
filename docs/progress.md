@@ -2281,6 +2281,128 @@ explicit pin'lendi.
 - A4f: `apps/driver-mobile/` (sürücü tarafı, ayrı bundle)
 - A4c-payment: iyzico Marketplace adapter
 
+---
+
+## 2026-05-06 — Session A4d-2: Customer Booking Flow (Browse → Quote → Confirm → Manage)
+
+### Done
+
+A4d-1 auth iskeletinin üstüne tam müşteri rezervasyon akışı bindi.
+Branch `feat/mobile-booking-flow` (6 commit).
+
+**G1** — Cached user offline-first
+
+- SecureStore key v1 → v2 (`event_fleet_auth_session_v2`), shape
+  `{tokens, user}`. v1 entry shape guard'tan rejekte + self-heal
+- `bootstrap.ts` ikiye böldü: `bootstrapAuth()` (instant cached) +
+  `validateSession()` (background `/auth/me`, valid/expired/offline)
+- AuthProvider: cached render → background validate → userChanged ise
+  persist; offline tutar; expired logout. `AbortController` ile
+  fast-unmount setState guard
+- 10 storage test + 9 bootstrap test (her terminal outcome)
+
+**G2** — Catalog browse + vehicle detail
+
+- `lib/api/catalog.ts` shared-types Zod runtime parse — local strict
+  schema `VehicleTypeSchema` + `CategoryAttributeDefinitionSchema` ile
+  compose (server `z.array(z.unknown())` yetersiz)
+- `useCategory` hand-rolled fetch+state hook
+- HomeScreen vehicleType list + offline banner (verified=false)
+- VehicleDetailScreen kapasite + "Fiyat Al" CTA
+- 4 catalog API test
+
+**G3** — Pricing + quote form
+
+- `lib/api/index.ts` singleton barrel — 1 ApiClient → 4 domain wrapper
+- `lib/api/pricing.ts` quotes + rules (ADDON filter)
+- `lib/api/booking.ts` confirm + cancel (Idempotency-Key) + listMy
+- `lib/format/datetime.ts` placeholder picker (12 test)
+- `lib/format/currency.ts` TR locale (6 test)
+- `AddonSelector` + `quote.tsx` (form + 6 pricing error code mapping)
+- Default Sultanahmet → Beşiktaş → seeded profile'da ~6877 TRY
+
+**G4+G5** — Quote summary + booking management
+
+- `quote-summary.tsx` full breakdown (Money: `{amount, currency}`
+  nested), expiry countdown, "Onayla" → POST /bookings/confirm →
+  router.replace("/(app)/bookings/[id]")
+- `BookingCard` 9 status için TR label + tone
+- `bookings/index.tsx` pull-to-refresh + useFocusEffect
+- `bookings/[id].tsx` status guidance + cancellable guard + cancel modal
+- 5 booking API test
+
+**G6+G7** — Tab navigator + docs
+
+- 3 tab + 4 hidden detail route, emoji icons
+- `apps/customer-mobile/CLAUDE.md` A4d-2 kapsam + 5 disiplin kuralı
+- `docs/development-notes.md` 9 yeni gotcha
+
+### Test sonuçları
+
+| Komut                                                  | Sonuç                  |
+| ------------------------------------------------------ | ---------------------- |
+| `pnpm --filter @event-fleet/customer-mobile typecheck` | ✓                      |
+| `pnpm --filter @event-fleet/customer-mobile lint`      | ✓                      |
+| `pnpm --filter @event-fleet/customer-mobile test`      | **84/84 PASS** in 0.9s |
+| `pnpm --filter @event-fleet/admin typecheck`           | ✓                      |
+| Root lint-staged on staged files                       | ✓                      |
+
+### Plandan sapmalar (gerekçeli)
+
+| Sapma                                             | Gerekçe                                                                                                      |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Brief 18-22 commit → **6 commit**                 | Kapsam birleştirme + minimal test kapsamı (logic-first; component test A4d-3 Jest setup ile ertelendi)       |
+| Jest + jest-expo setup deferred A4d-3             | React 18/19 monorepo type collision tetikleme riski + dep heaviness; vitest pure logic için yeterli          |
+| Brief Zod schemas mobile-redefined → shared-types | Drift safety > 10-15 KB bundle cost. A4d-1 "no Zod in mobile" notu revize edildi                             |
+| Brief catalog `attributes`/`imageUrl` alanları    | Gerçek API'de YOK; gerçek `ServiceCategoryDetail` shape kullanıldı                                           |
+| Brief breakdown flat string → Money nested        | Gerçek API `{amount, currency}` döndürüyor                                                                   |
+| Native datetime picker deferred A4d-3             | `@react-native-community/datetimepicker` Expo Go bundled version + babel check; manuel input + parse yeterli |
+| Lucide icons deferred A4d-3                       | Native module dep + react-native-svg peer; emoji placeholder iOS/Android'de çalışıyor                        |
+| `cancelledRef` → `AbortController`                | ESLint `no-unnecessary-condition` ref read'i statik analiz ediyor; `signal.aborted` daha az tetikliyor       |
+
+### Final commit listesi (branch)
+
+| #   | Commit  | Konu                                                                           |
+| --- | ------- | ------------------------------------------------------------------------------ |
+| 1   | 8d9ed76 | feat(customer-mobile): cached user offline-first auth bootstrap                |
+| 2   | e84d060 | feat(customer-mobile): add catalog browse with shared-types runtime parse      |
+| 3   | 906eca7 | feat(customer-mobile): add pricing api + quote flow with addon picker          |
+| 4   | 413dc73 | feat(customer-mobile): add quote summary + booking confirm + my bookings       |
+| 5   | f0f11d0 | feat(customer-mobile): tab navigator + module docs + AbortController bootstrap |
+| 6   | (bu)    | docs: log session a4d-2 progress                                               |
+
+### Manuel doğrulama (kullanıcı yapacak)
+
+Backend ayakta + seed çalıştırılmış:
+
+1. `pnpm --filter @event-fleet/customer-mobile start` → Expo Go QR scan
+2. Login (mock OTP) → Anasayfa tab → Düğün Aracı kategorisi
+3. VehicleType seç → "Fiyat Al"
+4. Pickup/dropoff yaz, default tarih bırak (7 gün sonra 14:00–22:00),
+   addon seç → "Fiyat Hesapla"
+5. Quote summary → ~6877 TRY breakdown göster → "Onayla ve Rezerve Et"
+6. Booking detail açılır → status "CONFIRMED" → "Rezervasyonlarım"
+   tab → liste'de görünür
+7. Booking detail → "Rezervasyonu İptal Et" → modal'da sebep yaz →
+   status "İptal Ettiniz"
+
+### Pending (A4d-3'e aktarılan)
+
+- Native datetime picker (`@react-native-community/datetimepicker`)
+- Maps autocomplete + route preview
+- Lucide icons + brand SVG set
+- Splash + app icon assets
+- Push notifications (Expo Push registration)
+- Component test setup (Jest + jest-expo + RTL)
+- Detox / Maestro e2e
+
+### Next
+
+- **A4d-3 mobile polish + push**: native picker + Maps + Jest setup
+  - push notifications + brand assets
+- A4f: `apps/driver-mobile/` (sürücü tarafı)
+- A4c-payment: iyzico Marketplace adapter
+
 <!--
 Şablon (yeni oturum buradan başlasın):
 

@@ -3,8 +3,14 @@
 // FlatCompat brings in plugins that fight ESLint 9. Keeping the rule set
 // minimal here is intentional: A4d-3 polish revisits and adds RN /
 // react-hooks rules once the upstream config has a flat export.
+//
+// We DO register the typescript-eslint plugin (without enabling any
+// rules) so eslint-disable comments referencing @typescript-eslint/*
+// rules don't trigger ESLint 9's "definition for rule was not found"
+// error. The rules stay off; the plugin presence is just for vocabulary.
 
 const tsParser = require("@typescript-eslint/parser");
+const tsPlugin = require("@typescript-eslint/eslint-plugin");
 
 module.exports = [
   {
@@ -21,6 +27,9 @@ module.exports = [
   },
   {
     files: ["**/*.{ts,tsx}"],
+    plugins: {
+      "@typescript-eslint": tsPlugin,
+    },
     languageOptions: {
       parser: tsParser,
       parserOptions: {
@@ -29,10 +38,6 @@ module.exports = [
         ecmaFeatures: { jsx: true },
       },
     },
-    // eslint-disable comments in source target the root lint-staged ruleset
-    // (which loads typescript-eslint). The local mobile config is minimal —
-    // turn off the "unused disable directive" warning so those comments
-    // don't become a second error here.
     linterOptions: {
       reportUnusedDisableDirectives: "off",
     },

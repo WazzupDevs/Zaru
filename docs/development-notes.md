@@ -8,6 +8,101 @@
 
 ---
 
+## 2026-05-06 — Session A4d-2 (mobile booking flow)
+
+### Cached-user pattern needs storage version bump
+
+A4d-1's SecureStore key was `event_fleet_auth_tokens_v1` and held just
+the tokens. A4d-2 needs the user object cached too (offline cold-start
+must render the home screen without a network round-trip), so the key
+bumped to `event_fleet_auth_session_v2` with shape `{tokens, user}`.
+
+Migration: the v2 reader's shape guard rejects a v1 entry (no `user`
+field) and self-heals via deleteItemAsync. Forces re-login on the
+device that has the v1 entry — acceptable because the project hasn't
+shipped a real build yet, no real user has the v1 entry.
+
+The same trick (bump the key + reject old shape) works for any future
+storage migration. Don't write a converter for pre-prod migrations —
+the test cost exceeds the cost of a one-time forced re-login.
+
+### useFocusEffect for list refresh after detail navigation
+
+`app/(app)/bookings/index.tsx` uses `useFocusEffect` so every time the
+user comes back from booking detail (e.g., after a cancel) the list
+refetches without a manual pull. Preferred over `useEffect(() => fetch(), [])`
+because useEffect only fires once per mount; the screen stays mounted
+under the tab navigator while the user navigates into detail.
+
+### Cached user pattern: offline doesn't mean unauthenticated
+
+Bootstrap split into two pure functions (bootstrapAuth + validateSession)
+so the React layer renders cached state immediately and runs the
+network validate in the background. validateSession returns `offline`
+on NetworkError or 5xx, and the AuthContext keeps the cached state in
+that case — only `expired` (real 401 after refresh exhaust) triggers
+logout. Without this, every flaky-connection cold start would feel
+like a forced logout.
+
+### shared-types runtime parse at the API boundary
+
+A4d-1 said "no Zod in the mobile bundle". A4d-2 reverses that: every
+API response is parsed through a shared-types Zod schema (catalog uses
+a stricter local schema composed from VehicleTypeSchema +
+CategoryAttributeDefinitionSchema; pricing + booking use the
+shared-types schemas directly).
+
+Cost: ~10–15 KB gzipped from Zod itself, paid once. Benefit: schema
+drift between mobile and API surfaces at first parse instead of as a
+silent undef somewhere downstream. For an MVP that'll iterate fast
+this is the right trade.
+
+### Single ApiClient threaded into every domain wrapper
+
+`src/lib/api/index.ts` builds one ApiClient at module load and threads
+it into authApi/catalogApi/pricingApi/bookingApi. The single-flight
+refresh queue lives in the client closure, so all four wrappers share
+the same de-dup window. Tempting to let each wrapper construct its own
+client — but then five concurrent 401s across two wrappers would issue
+two refreshes, defeating the whole point.
+
+Pattern for future wrappers (notifications, payments, etc.): import
+the existing `apiClient` from `lib/api/index.ts` and wrap, don't
+construct.
+
+### exactOptionalPropertyTypes + truthy checks
+
+With `exactOptionalPropertyTypes: true` an `interface { x?: T }` access
+gives `T | undefined` at the call site. ESLint's `no-unnecessary-condition`
+flags `if (query.x)` when TS thinks the type is non-empty — use
+`x !== undefined` for explicit narrowing or `x.length === 0` for
+"empty string means missing" semantics. Came up multiple times in
+the booking + quote screens.
+
+### Native datetime picker deferred
+
+`@react-native-community/datetimepicker` would need an Expo Go bundled
+version + a babel transform check. Decided to ship A4d-2 with manual
+`YYYY-MM-DD HH:mm` text input + `parseLocalDateTime` validation that
+rejects Feb 30 via round-trip check. A4d-3 swaps in the picker — output
+is a Date in both cases so call sites don't change.
+
+### Tab navigator with hidden detail routes
+
+Expo Router Tabs takes per-screen options; detail routes use `href: null`
+to stay in the route tree but hidden from the tab bar. Without the
+explicit `href: null` declarations the detail routes appear as extra
+tabs in the bottom bar.
+
+### Lucide icons deferred — emoji placeholder works
+
+Brief said `lucide-react-native` for tab icons. Skipped to avoid an
+extra dep + native module check; emojis (🏠 📅 👤) wrapped in Text
+work in both iOS and Android tab bars. A4d-3 polish swaps in the
+real icons + own brand SVG set.
+
+---
+
 ## 2026-05-06 — Session A4d-1 (mobile auth)
 
 ### React 18 vs 19 type collision in mixed-version monorepo
