@@ -1,11 +1,8 @@
-import { Text, View } from "react-native";
+import { Redirect } from "expo-router";
 
-// G1 placeholder — replaced in G2 with redirect logic that sends to
-// (auth)/phone or (app) based on AuthContext bootstrap result.
+// Root index — G4 swaps this for an AuthContext-aware redirect that sends
+// users to (app) when authenticated and (auth)/phone otherwise. Until then
+// every cold start lands on the phone-entry screen.
 export default function Index() {
-  return (
-    <View className="flex-1 items-center justify-center bg-neutral-950">
-      <Text className="text-amber-400 text-lg">Event Fleet</Text>
-    </View>
-  );
+  return <Redirect href="/(auth)/phone" />;
 }

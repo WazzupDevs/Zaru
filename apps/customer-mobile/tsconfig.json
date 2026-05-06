@@ -9,15 +9,11 @@
     "exactOptionalPropertyTypes": true,
     "useUnknownInCatchVariables": true,
     "forceConsistentCasingInFileNames": true,
-    "skipLibCheck": true,
-    "moduleResolution": "bundler",
-    "module": "ESNext",
-    "target": "ES2022",
-    "lib": ["ES2022", "DOM"],
-    "jsx": "react-native",
-    "types": ["expo", "nativewind/types", "node"],
+    "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "react": ["./node_modules/@types/react"],
+      "react/*": ["./node_modules/@types/react/*"]
     }
   },
   "include": [
@@ -26,8 +22,6 @@
     "**/*.ts",
     "**/*.tsx",
     "app.config.ts",
-    "metro.config.js",
-    "babel.config.js",
     "nativewind-env.d.ts",
     ".expo/types/**/*.ts",
     "expo-env.d.ts"
