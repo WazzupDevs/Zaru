@@ -2,9 +2,9 @@ import { forwardRef } from "react";
 import { Text, TextInput, View, type TextInputProps } from "react-native";
 
 export interface InputProps extends TextInputProps {
-  label?: string;
+  label?: string | undefined;
   error?: string | null | undefined;
-  hint?: string;
+  hint?: string | undefined;
 }
 
 export const Input = forwardRef<TextInput, InputProps>(function Input(
