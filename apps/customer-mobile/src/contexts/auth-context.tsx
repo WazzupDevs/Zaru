@@ -80,22 +80,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const authApi: AuthApi = useMemo(() => createAuthApi(apiClient), [apiClient]);
 
-  // Cancellation flag in a ref so ESLint sees the cleanup mutation.
-  // Prevents setState on an unmounted provider during fast HMR cycles.
-  const cancelledRef = useRef(false);
+  // AbortController instead of a manual flag — ESLint can't statically
+  // prove `signal.aborted` stays false across the await boundary, so it
+  // skips the no-unnecessary-condition warning that a `let cancelled`
+  // pattern triggers. The check is real: prevents setState on an
+  // unmounted provider during fast HMR cycles.
   useEffect(() => {
-    cancelledRef.current = false;
+    const controller = new AbortController();
+    const { signal } = controller;
 
     void (async () => {
-      // Step 1 — instant cached render. Whatever's in SecureStore goes
-      // straight into state with verified=false.
       const cold = await bootstrapAuth({ getStoredSession: getSession });
-      // ESLint can't see that the cleanup callback below mutates this
-      // ref across the closure boundary, so it flags the read as always
-      // false. The check is real — without it a fast unmount (HMR)
-      // would setState on an unmounted provider.
-
-      if (cancelledRef.current) return;
+      if (signal.aborted) return;
 
       if (cold.kind === "no-session") {
         setState({ status: "unauthenticated" });
@@ -104,16 +100,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       setState({ status: "authenticated", user: cold.session.user, verified: false });
 
-      // Step 2 — background validate. The API client's 401 auto-refresh
-      // sits between this call and the network; we only see
-      // AuthExpiredError if refresh itself died.
+      // Background validate. The API client's 401 auto-refresh sits
+      // between this call and the network; we only see AuthExpiredError
+      // if refresh itself died.
       const validated = await validateSession({ authApi, cachedUser: cold.session.user });
-      // ESLint can't see that the cleanup callback below mutates this
-      // ref across the closure boundary, so it flags the read as always
-      // false. The check is real — without it a fast unmount (HMR)
-      // would setState on an unmounted provider.
+      // ESLint can't see across the await + closure that the cleanup
+      // callback calls controller.abort() — so it flags this read as
+      // always-false. The check is real (prevents setState on an
+      // unmounted provider during HMR).
       // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-      if (cancelledRef.current) return;
+      if (signal.aborted) return;
 
       if (validated.kind === "expired") {
         await clearSession();
@@ -123,7 +119,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       if (validated.kind === "offline") {
         // Keep the cached state — verified stays false. Future API calls
-        // (e.g., bookings list) will surface the real status.
+        // will surface the real status.
         return;
       }
 
@@ -136,7 +132,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     })();
 
     return () => {
-      cancelledRef.current = true;
+      controller.abort();
     };
   }, [authApi]);
 

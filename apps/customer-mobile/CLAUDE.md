@@ -5,32 +5,98 @@ facing iOS/Android app — düğün/etkinlik müşterisi browse + book akışın
 buradan yapacak. Driver app (`apps/driver-mobile/`) A4f'de gelecek
 ayrı bundle.
 
-## A4d-1 kapsamı (mevcut)
+## A4d-1 + A4d-2 kapsamı (mevcut)
 
-- Expo SDK 52 monorepo iskelet
-- NativeWind v4 + brand placeholder palette (siyah + gold)
+**A4d-1** (auth scaffolding):
+
+- Expo SDK 52 monorepo iskelet, NativeWind v4 + brand palette (siyah + gold)
 - Token storage (SecureStore) + API client (single-flight refresh)
 - Auth bootstrap + Context + login/logout
 - Telefon → OTP → home → profile akışı
 
-## A4d-2'ye devredilenler (sıradaki oturum)
+**A4d-2** (booking flow):
 
-- Müşteri rezervasyon akışı (kategori seç → Quote al → confirm)
-- Booking listesi + detay
-- Push notifications (Expo Push)
-- Cached user (offline cold-start optimistic render için)
+- Cached user offline-first (SecureStore session = tokens + user)
+- Catalog browse: GET /catalog/categories/:slug → vehicleType list +
+  detail → "Fiyat Al"
+- Quote flow: pickup/dropoff (manuel) + datetime (text input
+  placeholder, A4d-3 picker) + addon picker → POST /pricing/quotes
+- Quote summary: full breakdown (base/distance/hourly/multipliers/
+  addons → total) + "Onayla" → POST /bookings/confirm (idempotent)
+- My bookings: list (pull-to-refresh + useFocusEffect) + detail
+  (status guidance per state) + cancel modal (CONFIRMED/DRIVER_ASSIGNED
+  cancellable)
+- Tab navigator: 3 tabs (Anasayfa / Rezervasyonlar / Profil) + 4 hidden
+  detail routes
+- shared-types Zod runtime parse at API boundary (catalog/pricing/
+  booking shapes); ~10–15 KB gzipped accepted in exchange for drift
+  detection at first parse
 
-## A4d-3 (polish)
+## A4d-3'e devredilenler (sıradaki oturum)
 
-- Gerçek brand identity (renk + tipografi + ikon paketi)
-- Component test suite (Jest + jest-expo + RTL)
-- Splash + icon assets (şu an Expo default placeholder)
-- Detox e2e testleri
+- Native datetime picker (`@react-native-community/datetimepicker`) —
+  şu an manuel `YYYY-MM-DD HH:mm` input
+- Maps autocomplete + route preview — şu an `lib/constants.ts`'te
+  Sultanahmet → Beşiktaş placeholder coords
+- Real brand identity (renk + tipografi + ikon paketi); lucide-
+  react-native vector icons (şu an emoji placeholder)
+- Splash + app icon assets (Expo default kullanıyor)
+- Push notifications (Expo Push token registration + handler)
+- Component test suite (Jest + jest-expo + @testing-library/react-native)
+- Detox / Maestro e2e
 
 ## A4f / A4g
 
 - A4f: `apps/driver-mobile/` (sürücü tarafı, ayrı app)
 - A4g: EAS Build setup (real `eas.json` + projectId, production build)
+
+## Mutlaka uyulacak yeni kurallar (A4d-2)
+
+### shared-types runtime parse at API boundary
+
+Her API response Zod parse'tan geçer (catalog: lokal strict schema;
+pricing/booking: shared-types'ın kendi şemaları). Mobile bundle Zod'u
+ship eder (~10–15 KB gzipped) — A4d-1'deki "no Zod in mobile" kararı
+**revize**. Sebep: API surface büyüdükçe şape drift'i sessiz runtime
+hatasından daha pahalı; parse() throw'u erken yakalar.
+
+**Catalog** için `ServiceCategoryDetailStrictSchema` lokal — server-side
+`vehicleTypes: z.array(z.unknown())` yeterli değil; per-item schema
+(`VehicleTypeSchema`) ile compose ediyoruz.
+
+### API client singleton
+
+`src/lib/api/index.ts` tek `ApiClient`'ı authApi/catalogApi/pricingApi/
+bookingApi'ye thread eder. Single-flight refresh queue böylece tüm domain
+wrapper'ları arasında de-dup yapar. **Yeni domain wrapper eklerken** bu
+barrel'a register et — kendi ApiClient'ını oluşturma.
+
+### Idempotency-Key her POST'ta
+
+- `booking-confirm-${quoteId}` — double-tap iki booking yaratamaz
+- `booking-cancel-${bookingId}-${secondBucket}` — second-bucket re-cancel
+  later için key'i değiştirir
+- `/pricing/quotes` server-side IdempotencyInterceptor'a sahip; mobile
+  her quote isteği için yeni key gönderir (otomatik istemcide yok)
+
+### Cancellable state guard
+
+UI'da Cancel butonu **sadece** `CONFIRMED` veya `DRIVER_ASSIGNED`
+state'lerinde gösterilir. `IN_PROGRESS` / `COMPLETED` / `CANCELLED_*` /
+`EXPIRED` için button hidden. State machine sunucu otoritesidir; mobile
+sadece görsel guard koyar.
+
+### Maps placeholder
+
+`src/lib/constants.ts` Sultanahmet → Beşiktaş coords export eder. Quote
+formu bunu hardcoded gönderir. **A4d-3 swap point**: `DEFAULT_PICKUP_COORDS`
+ve `DEFAULT_DROPOFF_COORDS`'u grep et, autocomplete callback ile değiştir.
+
+### Manual datetime input
+
+`lib/format/datetime.ts` `YYYY-MM-DD HH:mm` parse eder, Feb-30 round-trip
+reject ile. A4d-3 native picker geldiğinde çıktı Date olduğu için call
+site'lar değişmez.
 
 ## Mimari
 
