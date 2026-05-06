@@ -83,20 +83,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const authApi: AuthApi = useMemo(() => createAuthApi(apiClient), [apiClient]);
 
   // Cold-start bootstrap. Runs exactly once per app process.
+  // Cancellation flag lives in a ref so ESLint's no-unnecessary-condition
+  // can see that the cleanup callback mutates it (a `let cancelled` flag
+  // confuses the analyzer across the IIFE closure boundary). Without this
+  // guard a fast unmount (HMR) would setState on an unmounted provider.
+  const cancelledRef = useRef(false);
   useEffect(() => {
-    let cancelled = false;
+    cancelledRef.current = false;
     void (async () => {
       const result: BootstrapResult = await bootstrapAuth({
         getStoredTokens,
         clearStoredTokens,
         authApi,
       });
-      // ESLint can't see across the closure boundary that `cancelled` is
-      // mutated by the cleanup callback below, so it flags this as
-      // always-false. The check is real — without it a fast unmount
-      // (e.g., HMR) would setState on an unmounted provider.
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-      if (cancelled) return;
+      if (cancelledRef.current) return;
       switch (result.kind) {
         case "no-session":
         case "expired":
@@ -114,7 +114,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     })();
     return () => {
-      cancelled = true;
+      cancelledRef.current = true;
     };
   }, [authApi]);
 

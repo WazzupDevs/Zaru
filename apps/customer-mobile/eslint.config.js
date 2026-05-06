@@ -29,6 +29,13 @@ module.exports = [
         ecmaFeatures: { jsx: true },
       },
     },
+    // eslint-disable comments in source target the root lint-staged ruleset
+    // (which loads typescript-eslint). The local mobile config is minimal —
+    // turn off the "unused disable directive" warning so those comments
+    // don't become a second error here.
+    linterOptions: {
+      reportUnusedDisableDirectives: "off",
+    },
     rules: {
       "no-unused-vars": "off",
       "no-undef": "off",
