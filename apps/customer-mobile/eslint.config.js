@@ -23,6 +23,8 @@ module.exports = [
       "babel.config.js",
       "metro.config.js",
       "eslint.config.js",
+      "jest.config.js",
+      "jest.setup.js",
     ],
   },
   {
