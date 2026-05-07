@@ -1,5 +1,6 @@
 import { Tabs } from "expo-router";
-import { Text } from "react-native";
+
+import { Icons } from "../../src/components/Icon";
 
 // Authenticated tab navigator. Three top-level tabs (Anasayfa /
 // Rezervasyonlarım / Profil) + four hidden detail routes (vehicle/[id],
@@ -7,8 +8,9 @@ import { Text } from "react-native";
 // router.push from a tab screen. `href: null` removes them from the tab
 // bar without removing them from the stack.
 //
-// Icons are text emojis for A4d-2; A4d-3 polish swaps in lucide-react-
-// native vector icons (deferred to keep the dep tree small this session).
+// Icons swapped from emoji placeholders to lucide-react-native vector
+// glyphs in A4d-3. The brand SVG set (custom illustrations) lands in
+// A4g alongside the real splash + app icon.
 export default function AppLayout() {
   return (
     <Tabs
@@ -23,21 +25,21 @@ export default function AppLayout() {
         name="index"
         options={{
           title: "Anasayfa",
-          tabBarIcon: ({ color }) => <TabIcon emoji="🏠" color={color} />,
+          tabBarIcon: ({ color, size }) => <Icons.Home color={color} size={size} />,
         }}
       />
       <Tabs.Screen
         name="bookings/index"
         options={{
           title: "Rezervasyonlar",
-          tabBarIcon: ({ color }) => <TabIcon emoji="📅" color={color} />,
+          tabBarIcon: ({ color, size }) => <Icons.Calendar color={color} size={size} />,
         }}
       />
       <Tabs.Screen
         name="profile"
         options={{
           title: "Profil",
-          tabBarIcon: ({ color }) => <TabIcon emoji="👤" color={color} />,
+          tabBarIcon: ({ color, size }) => <Icons.User color={color} size={size} />,
         }}
       />
 
@@ -48,8 +50,4 @@ export default function AppLayout() {
       <Tabs.Screen name="bookings/[id]" options={{ href: null }} />
     </Tabs>
   );
-}
-
-function TabIcon({ emoji, color }: { emoji: string; color: string }) {
-  return <Text style={{ fontSize: 22, color }}>{emoji}</Text>;
 }

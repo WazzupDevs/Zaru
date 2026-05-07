@@ -2403,6 +2403,132 @@ Backend ayakta + seed çalıştırılmış:
 - A4f: `apps/driver-mobile/` (sürücü tarafı)
 - A4c-payment: iyzico Marketplace adapter
 
+---
+
+## 2026-05-07 — Session A4d-3: Mobile Polish (Native Picker + Lucide + Jest + Logger)
+
+### Done
+
+A4d'nin son polish dilimi — A4d-3 sonunda customer mobile MVP-ready.
+Push registration scope-out edildi (A4e-3'e ertelendi; sebep: backend
+push token endpoint mevcut değil → kendi oturumunu hak ediyor).
+Branch `feat/mobile-polish` (6 commit).
+
+**G1** — Native datetime picker
+
+- `@react-native-community/datetimepicker@8.2.0` (Expo SDK 52 bundled)
+- `src/components/DateTimePicker.tsx` platform-specific UX:
+  - **Android**: system picker modal, `onChange` tek seferlik (set
+    veya dismissed); mode="datetime" date+time package içinde chain
+  - **iOS**: inline wheel + Modal wrapper + "Tamam" confirm. Wheel
+    her tick `onChange`; `tempDate` ref'inde tutup confirm'e kadar
+    parent'a iletmeyi geciktiriyoruz
+- Quote screen state `string` → `Date`; manuel parser + 12 test silindi
+
+**G2** — Lucide icons
+
+- `lucide-react-native@0.469` + `react-native-svg@15.8.0`
+- `src/components/Icon.tsx` barrel — domain-friendly isimler +
+  tree-shaking + library swap (A4g brand SVG) için tek file edit
+- Tab navigator (🏠📅👤 → Home/Calendar/User), ErrorView, BookingCard
+  status badges (9 status için icon)
+
+**G4** — Jest + jest-expo + RTL setup
+
+- `jest`, `jest-expo@~52`, `@testing-library/react-native@12`,
+  `@babel/runtime` (RN babel transform require eder)
+- `transformIgnorePatterns` İKİ pattern: pnpm `.pnpm/` virtual store
+  - hoisted layout (tek pattern .pnpm prefix'inden geçemiyor)
+- `moduleNameMapper.react` A4d-1'in tsconfig.paths react redirect'ini
+  Jest runtime için cancel ediyor
+- jest-native YOK — RTL 12+ matchers built-in; setupFilesAfterEach
+  Jest 29'da var değil
+- 12 component test (Button/BookingCard + statusDisplay drift guard/
+  AddonSelector)
+
+**G5** — Structured logger + PII redaction
+
+- `src/lib/logger.ts` Logger.debug/info/warn/error
+- PII redaction: `/phone|recipient|password|token|secret/i` → son-4
+  yıldız (`+905551112233` → `+90555111****`)
+- `Logger.debug` no-op when `__DEV__` is false
+- 13 logger test
+- Quote addon-load `.catch` artık Logger.warn
+
+**G6** — Docs
+
+- `apps/customer-mobile/CLAUDE.md` A4d-3 + 4 yeni disiplin kuralı
+- `docs/development-notes.md` 9 yeni gotcha
+
+### Test sonuçları
+
+| Komut                                                        | Sonuç                     |
+| ------------------------------------------------------------ | ------------------------- |
+| `pnpm --filter @event-fleet/customer-mobile typecheck`       | ✓                         |
+| `pnpm --filter @event-fleet/customer-mobile lint`            | ✓                         |
+| `pnpm --filter @event-fleet/customer-mobile test`            | **83/83 PASS** (vitest)   |
+| `pnpm --filter @event-fleet/customer-mobile test:components` | **12/12 PASS** (jest)     |
+| Toplam mobile test                                           | **95** (84 → 95, +11 net) |
+| `pnpm --filter @event-fleet/admin typecheck`                 | ✓                         |
+
+### Plandan sapmalar (gerekçeli)
+
+| Sapma                                | Gerekçe                                                                                                                             |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| **Push registration deferred A4e-3** | Backend `User.expoPushToken` field + endpoint mevcut değil; backend değişikliği kendi oturumunu hak ediyor. Kullanıcı (b) onayladı. |
+| Brief 9-11 commit → **6 commit**     | Push 4-5 commit alıyordu; kalan kapsam 6 commit                                                                                     |
+| @testing-library/jest-native ATLANDI | RTL 12+ matchers built-in, jest-native deprecated yol                                                                               |
+| `setupFilesAfterEach` kullanılmadı   | Jest 29'da bu key yok; jest-native bağımlılığı zaten kalktı                                                                         |
+| Manuel datetime parser **silindi**   | Hiçbir consumer kalmadı; 12 datetime test de silindi                                                                                |
+| `@babel/runtime` direct dep eklendi  | RN babel transform require ediyor, brief atlamış                                                                                    |
+
+### Final commit listesi (branch)
+
+| #   | Commit  | Konu                                                                    |
+| --- | ------- | ----------------------------------------------------------------------- |
+| 1   | 25b161f | chore(customer-mobile): add @react-native-community/datetimepicker dep  |
+| 2   | a29d047 | feat(customer-mobile): replace manual datetime input with native picker |
+| 3   | cc9cca2 | feat(customer-mobile): replace emoji icons with lucide vector icons     |
+| 4   | cc39ef5 | chore(customer-mobile): set up jest + react native testing library      |
+| 5   | c9bf877 | feat(customer-mobile): add structured logger with PII redaction         |
+| 6   | (bu)    | docs: log session a4d-3 progress and mark a4d complete                  |
+
+### Manuel doğrulama (kullanıcı yapacak)
+
+1. Backend ayakta + seed
+2. `pnpm --filter @event-fleet/customer-mobile start` → Expo Go QR scan
+3. Login → Anasayfa tab (lucide Home icon) → Düğün Aracı
+4. VehicleType seç → "Fiyat Al" → datetime alanlarına tıkla:
+   - **iOS**: slide-up wheel + "Tamam" confirm
+   - **Android**: sistem date picker → time picker → kapan
+5. "Fiyat Hesapla" → quote summary → "Onayla" → booking detail
+   (status badge'de Check icon)
+6. Bookings tab (lucide Calendar) → kayıt görünmeli
+7. Booking detail status icon (Car/Clock/XCircle vs)
+
+### Pending (A4e-3 — push registration ayrı oturum)
+
+- Backend Prisma migration (User.expoPushToken, pushTokenUpdatedAt)
+- UpdatePushTokenUseCase + Identity port + Prisma impl
+- PATCH /users/me/push-token + Zod schema
+- Mobile expo-notifications + expo-device + PushTokenService
+- AuthContext push registration after verifyOtp + foreground handler
+
+### Pending (A4g — production deploy)
+
+- Real EAS Build (eas init, real projectId, eas.json profiles)
+- Maps autocomplete + route preview
+- Real brand identity + splash + app icon assets + vehicleType fotoğrafları
+- Brand SVG icon set
+- Detox / Maestro e2e
+
+### Next
+
+- **A4d TAMAMLANDI** (auth + booking + polish, 3 alt-oturum)
+- **A4e-3 push registration** (backend + mobile birlikte) ← önerilen
+- A4f: `apps/driver-mobile/` (sürücü tarafı, ayrı bundle)
+- A4c-payment: iyzico Marketplace adapter
+
 <!--
 Şablon (yeni oturum buradan başlasın):
 

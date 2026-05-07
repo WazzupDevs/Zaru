@@ -197,6 +197,118 @@ calls setState on an unmounted provider. Suppress with a one-line
 
 ---
 
+## 2026-05-07 — Session A4d-3 (mobile polish)
+
+### Jest + pnpm `transformIgnorePatterns` needs TWO patterns
+
+Jest's default `transformIgnorePatterns` excludes everything in
+`node_modules/`. The standard jest-expo whitelist regex
+(`node_modules/(?!((jest-)?react-native|@react-native|expo|...)`)
+matches the hoisted layout. **It does NOT match pnpm's virtual store**,
+where packages live at `node_modules/.pnpm/<scoped+name@version>/
+node_modules/<name>/`. The `.pnpm/` segment breaks the lookahead and
+Jest tries to run untranspiled Flow / ESM through node and crashes
+with `SyntaxError: Unexpected identifier 'ErrorHandler'` (or similar).
+
+Fix: ship two patterns in `transformIgnorePatterns`:
+
+```js
+"node_modules/.pnpm/(?!((jest-)?react-native|@react-native(-community)?|...))";
+"node_modules/(?!\\.pnpm|((jest-)?react-native|...))";
+```
+
+The first whitelists the .pnpm store, the second handles the symlinked
+hoisted layout.
+
+### Jest's `moduleNameMapper` must override A4d-1's `react` redirect
+
+A4d-1's `tsconfig.paths` redirects `react` and `react/*` to
+`./node_modules/@types/react` to fix the React 18/19 type collision.
+**That's a TypeScript-only redirect** — when Jest's runtime resolver
+follows the same map it tries to load the @types directory as a real
+module and crashes with "Could not locate module react mapped as ...".
+
+Fix in `jest.config.js`:
+
+```js
+moduleNameMapper: {
+  "^react$": "<rootDir>/node_modules/react",
+  "^react/(.*)$": "<rootDir>/node_modules/react/$1",
+}
+```
+
+### `@testing-library/react-native` 12+ ships built-in matchers
+
+Older docs (incl. the brief I worked from) tell you to load
+`@testing-library/jest-native/extend-expect` via `setupFilesAfterEach`
+in jest.config. Two problems: (1) `setupFilesAfterEach` is not a real
+Jest 29 option (Jest validates "Unknown option"); (2) RTL 12+ absorbed
+the matchers — `toBeOnTheScreen`, `toHaveTextContent`, etc work out of
+the box. Skip `jest-native` entirely.
+
+### `@babel/runtime` must be a direct mobile dep
+
+RN's babel transform emits `require("@babel/runtime/helpers/...")`
+calls but the package isn't pulled in transitively in a way Jest can
+resolve. Add it to the mobile `dependencies` (not just devDeps —
+runtime-required).
+
+### Native datetime picker iOS UX
+
+iOS doesn't have a system "picker modal" — `@react-native-community/
+datetimepicker` renders an inline wheel that lives in your view tree.
+The convention is to wrap it in a slide-up `<Modal>` with an explicit
+"Tamam" confirm button. The wheel's `onChange` fires every tick the
+user rolls; we hold the value in a `tempDate` ref and only call the
+parent's onChange on confirm. Otherwise the form would re-render on
+every wheel tick.
+
+### Native datetime picker Android UX
+
+Android shows a modal dialog managed by the OS. The picker emits
+`onChange` exactly once with `event.type === "set"` (user confirmed)
+or `"dismissed"` (cancel). We close the picker either way and only
+commit on "set". For `mode="datetime"` the package internally chains
+date → time pickers (no extra wiring needed).
+
+### `exactOptionalPropertyTypes` + optional dep props
+
+The picker's `minimumDate?: Date` (no `| undefined`) means with
+exactOptionalPropertyTypes you can't pass `undefined` explicitly. Spread
+conditionally instead:
+
+```tsx
+{...(minimumDate ? { minimumDate } : {})}
+```
+
+### Lucide barrel pattern for tree-shaking + library swap
+
+Every icon goes through `src/components/Icon.tsx` re-export with a
+domain-friendly name (`Icons.Refresh` not `<RefreshCw />`). Two reasons:
+(1) tree-shaking — importing `Icons.Home` pulls only Home, not the
+1300-icon bundle; (2) A4g may bring brand-custom SVGs and the swap is
+one file edit.
+
+### Logger PII discipline
+
+`Logger.warn("foo", { phone })` masks the phone value to last-4 stars
+before any console / future-tracker call. The key pattern is
+`/phone|recipient|password|token|secret/i`. Don't fight it — if you
+need a visible diagnostic id, use a non-matching key like `userId` or
+`requestId`.
+
+`Logger.debug` is no-op when `__DEV__` is false. Verbose tracing is
+free in dev, vanishes in prod.
+
+### Don't add `setupFilesAfterEach` (it's not a Jest 29 option)
+
+Real Jest 29 setup options are `setupFiles` (before framework) and
+that's it for non-globalSetup pre-test code. The (real) post-framework
+hook is `setupFilesAfterEach` ← still doesn't exist. Mocks + matchers
+both go in `setupFiles`.
+
+---
+
 ## 2026-04-23 — Session A2b
 
 ### Yeni root-level `.ts` config dosyası eklediğinizde

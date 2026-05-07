@@ -5,6 +5,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { AddonSelector } from "../../src/components/AddonSelector";
 import { Button } from "../../src/components/Button";
+import { DateTimePicker } from "../../src/components/DateTimePicker";
 import { Input } from "../../src/components/Input";
 import { useCategory } from "../../src/hooks/use-category";
 import { pricingApi } from "../../src/lib/api";
@@ -15,23 +16,21 @@ import {
   DEFAULT_DROPOFF_COORDS,
   DEFAULT_PICKUP_COORDS,
 } from "../../src/lib/constants";
-import { formatLocalDateTime, parseLocalDateTime } from "../../src/lib/format/datetime";
+import { Logger } from "../../src/lib/logger";
 
-const DATETIME_PLACEHOLDER = "2026-08-15 14:00";
-
-function defaultEventStart(): string {
+function defaultEventStart(): Date {
   // 7 days from now at 14:00 — sensible default the user can edit.
   const d = new Date();
   d.setDate(d.getDate() + 7);
   d.setHours(14, 0, 0, 0);
-  return formatLocalDateTime(d);
+  return d;
 }
 
-function defaultEventEnd(): string {
+function defaultEventEnd(): Date {
   const d = new Date();
   d.setDate(d.getDate() + 7);
   d.setHours(22, 0, 0, 0);
-  return formatLocalDateTime(d);
+  return d;
 }
 
 const PRICING_ERROR_MESSAGES: Record<string, string> = {
@@ -49,8 +48,8 @@ export default function QuoteScreen() {
 
   const [pickupAddress, setPickupAddress] = useState("");
   const [dropoffAddress, setDropoffAddress] = useState("");
-  const [eventStart, setEventStart] = useState(defaultEventStart());
-  const [eventEnd, setEventEnd] = useState(defaultEventEnd());
+  const [eventStart, setEventStart] = useState<Date>(defaultEventStart);
+  const [eventEnd, setEventEnd] = useState<Date>(defaultEventEnd);
   const [addons, setAddons] = useState<PricingRuleResponse[]>([]);
   const [selectedAddonIds, setSelectedAddonIds] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
@@ -65,16 +64,25 @@ export default function QuoteScreen() {
       .then((rules) => {
         if (!cancelled) setAddons(rules);
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         // Addon load failure isn't fatal — user can still get a quote
-        // without any addons selected. Silent fallback.
+        // without any addons selected. Log so it's visible in dev /
+        // future error tracking, then continue.
+        Logger.warn("addon_load_failed", {
+          vehicleTypeId,
+          message: err instanceof Error ? err.message : String(err),
+        });
       });
     return () => {
       cancelled = true;
     };
   }, [category, vehicleTypeId]);
 
-  const validation = useMemo(() => validateQuoteForm(eventStart, eventEnd), [eventStart, eventEnd]);
+  // The native picker hands back a real Date object so we don't need a
+  // string parser any more — the only remaining client-side check is
+  // "end after start" because the picker's minimumDate is set per-input,
+  // not relative.
+  const timeRangeValid = useMemo(() => eventEnd > eventStart, [eventStart, eventEnd]);
 
   const handleToggleAddon = useCallback((id: string) => {
     setSelectedAddonIds((prev) =>
@@ -89,11 +97,7 @@ export default function QuoteScreen() {
       setError("Alış ve bırakış adreslerini girin");
       return;
     }
-    if (validation.startDate === null || validation.endDate === null) {
-      setError("Tarih ve saat formatı: 2026-08-15 14:00");
-      return;
-    }
-    if (validation.endDate <= validation.startDate) {
+    if (!timeRangeValid) {
       setError("Bitiş zamanı başlangıçtan sonra olmalı");
       return;
     }
@@ -110,8 +114,8 @@ export default function QuoteScreen() {
         dropoffLat: DEFAULT_DROPOFF_COORDS.lat,
         dropoffLng: DEFAULT_DROPOFF_COORDS.lng,
         dropoffAddress: dropoffAddress.trim(),
-        eventStartAt: validation.startDate.toISOString(),
-        eventEndAt: validation.endDate.toISOString(),
+        eventStartAt: eventStart.toISOString(),
+        eventEndAt: eventEnd.toISOString(),
         selectedAddonIds,
       });
       router.push({
@@ -132,13 +136,17 @@ export default function QuoteScreen() {
   }, [
     category,
     dropoffAddress,
+    eventEnd,
+    eventStart,
     pickupAddress,
     selectedAddonIds,
     submitting,
-    validation.endDate,
-    validation.startDate,
+    timeRangeValid,
     vehicleTypeId,
   ]);
+
+  // minimumDate guards: start can't be in the past; end can't be before start.
+  const now = useMemo(() => new Date(), []);
 
   return (
     <SafeAreaView className="flex-1 bg-brand-surface">
@@ -169,20 +177,18 @@ export default function QuoteScreen() {
               placeholder="Örn: Beşiktaş, İstanbul"
               autoCapitalize="words"
             />
-            <Input
+
+            <DateTimePicker
               label="Etkinlik başlangıcı"
               value={eventStart}
-              onChangeText={setEventStart}
-              placeholder={DATETIME_PLACEHOLDER}
-              autoCapitalize="none"
-              hint="A4d-3'te tarih seçici eklenecek. Format: YYYY-AA-GG SS:DD"
+              onChange={setEventStart}
+              minimumDate={now}
             />
-            <Input
+            <DateTimePicker
               label="Etkinlik bitişi"
               value={eventEnd}
-              onChangeText={setEventEnd}
-              placeholder={DATETIME_PLACEHOLDER}
-              autoCapitalize="none"
+              onChange={setEventEnd}
+              minimumDate={eventStart}
             />
 
             <AddonSelector
@@ -209,16 +215,4 @@ export default function QuoteScreen() {
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
-}
-
-interface QuoteValidation {
-  startDate: Date | null;
-  endDate: Date | null;
-}
-
-function validateQuoteForm(startInput: string, endInput: string): QuoteValidation {
-  return {
-    startDate: parseLocalDateTime(startInput),
-    endDate: parseLocalDateTime(endInput),
-  };
 }
