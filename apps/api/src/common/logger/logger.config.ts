@@ -38,6 +38,12 @@ const REDACT_PATHS = [
   // payload that captures them.
   "*.recipientPhone",
   "*.renderedBody",
+  // Push tokens (A4e-3): an Expo push token is a write capability — anyone
+  // with it can send a notification to that device. Redact in any logger
+  // payload (User row, Notification row, controller body, audit dump).
+  "*.expoPushToken",
+  "*.recipientPushToken",
+  "req.body.expoPushToken",
 ];
 
 const SERVICE_NAME = "event-fleet-api";

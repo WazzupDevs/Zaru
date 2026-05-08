@@ -33,6 +33,8 @@ function buildUser(overrides: Partial<UserRecord> = {}): UserRecord {
     role: "CUSTOMER",
     phoneVerifiedAt: new Date(),
     lastLoginAt: null,
+    expoPushToken: null,
+    pushTokenUpdatedAt: null,
     createdAt: new Date(),
     ...overrides,
   };
@@ -163,7 +165,17 @@ describe("NotificationContextProvider", () => {
       userId: "u-1",
       displayName: "Ahmet",
       phoneE164: "+905551112233",
+      expoPushToken: null,
     });
+  });
+
+  it("getCustomerContext threads the expoPushToken through (A4e-3)", async () => {
+    const TOKEN = "ExponentPushToken[abc]";
+    const { provider } = build({
+      user: buildUser({ expoPushToken: TOKEN }),
+    });
+    const ctx = await provider.getCustomerContext("u-1");
+    expect(ctx?.expoPushToken).toBe(TOKEN);
   });
 
   it("getCustomerContext returns null when user is missing", async () => {

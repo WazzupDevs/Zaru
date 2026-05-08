@@ -74,6 +74,8 @@ function buildUser(overrides: Partial<UserRecord> = {}): UserRecord {
     role: "CUSTOMER",
     phoneVerifiedAt: NOW,
     lastLoginAt: NOW,
+    expoPushToken: null,
+    pushTokenUpdatedAt: null,
     createdAt: NOW,
     ...overrides,
   };
@@ -102,6 +104,7 @@ function buildMocks(
     findActiveById: vi.fn().mockResolvedValue(existingUser ?? buildUser()),
     createVerified: vi.fn().mockResolvedValue(buildUser()),
     touchLastLogin: vi.fn().mockResolvedValue(undefined),
+    updatePushToken: vi.fn().mockResolvedValue(undefined),
   };
 
   const refreshRepo: RefreshTokenRepositoryPort = {

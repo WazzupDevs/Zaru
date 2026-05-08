@@ -8,9 +8,12 @@ import {
   type ReactNode,
 } from "react";
 
+import { usersApi } from "../lib/api";
 import { createAuthApi, type AuthApi, type AuthUserSummary } from "../lib/api/auth";
 import { createApiClient, type ApiClient } from "../lib/api/client";
 import { bootstrapAuth, validateSession } from "../lib/auth/bootstrap";
+import { Logger } from "../lib/logger";
+import { PushTokenService } from "../lib/push/push-token-service";
 import {
   clearSession,
   getSession,
@@ -19,6 +22,26 @@ import {
   setTokens,
   type StoredTokens,
 } from "../lib/storage/secure-token-storage";
+
+/**
+ * Best-effort push registration after a successful OTP verify. Walks
+ * the permission flow, gets the Expo token, PATCHes it to /users/me/
+ * push-token. Every failure mode (no device, no permission, network
+ * error, placeholder projectId) logs + swallows — the auth flow
+ * already succeeded by the time we get here.
+ */
+async function registerPushToken(): Promise<void> {
+  try {
+    const token = await PushTokenService.requestPermissionAndGetToken();
+    if (!token) return; // Soft-null path — Service already logged the reason.
+    await usersApi.updatePushToken(token);
+    Logger.info("push_registration_success");
+  } catch (err) {
+    Logger.warn("push_registration_failed", {
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
 
 /**
  * Auth state machine — three observable states:
@@ -139,9 +162,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(async (tokens: StoredTokens, user: AuthUserSummary) => {
     await setSession({ tokens, user });
     setState({ status: "authenticated", user, verified: true });
+
+    // Push registration — fire-and-forget. A NetworkError, denied
+    // permission, or placeholder projectId all return null silently;
+    // anything else throws and we swallow + log so the auth flow
+    // never breaks because of push. The token gets PATCHed to
+    // /users/me/push-token; the backend stores it on the User row +
+    // the listener picks PUSH on the next outbox event.
+    void registerPushToken();
   }, []);
 
   const logout = useCallback(async () => {
+    // Best-effort token clear on the server. Failure here is harmless
+    // — the session is already gone client-side, the worst case is a
+    // stale token sticks around on the User row and the next push
+    // dies with DeviceNotRegistered (cleanup loop handles that in A4g).
+    try {
+      await usersApi.updatePushToken(null);
+    } catch (err) {
+      Logger.warn("push_token_clear_failed", {
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
     await clearSession();
     setState({ status: "unauthenticated" });
   }, []);

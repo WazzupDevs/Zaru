@@ -48,6 +48,19 @@ export class PrismaUserRepository implements UserRepositoryPort {
     });
   }
 
+  async updatePushToken(
+    tx: TxClient,
+    params: { userId: string; expoPushToken: string | null; at: Date },
+  ): Promise<void> {
+    await tx.user.update({
+      where: { id: params.userId },
+      data: {
+        expoPushToken: params.expoPushToken,
+        pushTokenUpdatedAt: params.at,
+      },
+    });
+  }
+
   /** This service exists only to satisfy DI; PrismaService is the real source. */
 
   private _unused(): void {
@@ -62,6 +75,8 @@ interface UserRow {
   role: "CUSTOMER" | "DRIVER" | "ADMIN" | "SUPPORT";
   phoneVerifiedAt: Date | null;
   lastLoginAt: Date | null;
+  expoPushToken: string | null;
+  pushTokenUpdatedAt: Date | null;
   createdAt: Date;
 }
 
@@ -73,6 +88,8 @@ function toRecord(row: UserRow): UserRecord {
     role: row.role,
     phoneVerifiedAt: row.phoneVerifiedAt,
     lastLoginAt: row.lastLoginAt,
+    expoPushToken: row.expoPushToken,
+    pushTokenUpdatedAt: row.pushTokenUpdatedAt,
     createdAt: row.createdAt,
   };
 }

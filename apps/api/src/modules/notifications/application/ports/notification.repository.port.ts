@@ -25,6 +25,9 @@ export interface CreateNotificationInput {
   kind: NotificationKind;
   recipientUserId: string | null;
   recipientPhone: string;
+  /** A4e-3 — populated for PUSH rows so the sender can dispatch
+   * without a second DB hit. Null on SMS rows. */
+  recipientPushToken: string | null;
   templateKey: string;
   locale: string;
   renderedBody: string;

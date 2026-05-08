@@ -3,8 +3,28 @@ import { OnEvent } from "@nestjs/event-emitter";
 import { InjectPinoLogger, PinoLogger } from "nestjs-pino";
 
 import { formatTrCurrency } from "../services/format.helpers";
-import { NotificationContextProvider } from "../services/notification-context.provider";
+import {
+  NotificationContextProvider,
+  type NotificationCustomerContext,
+} from "../services/notification-context.provider";
 import { QueueNotificationUseCase } from "../use-cases/queue-notification.use-case";
+
+import type { NotificationChannel } from "../../domain/notification-types";
+
+/**
+ * Channel routing — token present → PUSH, otherwise SMS fallback.
+ * Returning channel + token in one shape lets call sites stay flat.
+ * ADR 0021 amended in A4e-3.
+ */
+function pickChannel(customer: NotificationCustomerContext): {
+  channel: NotificationChannel;
+  recipientPushToken: string | null;
+} {
+  if (customer.expoPushToken !== null && customer.expoPushToken.length > 0) {
+    return { channel: "PUSH", recipientPushToken: customer.expoPushToken };
+  }
+  return { channel: "SMS", recipientPushToken: null };
+}
 
 /**
  * In-process bridge from outbox events (drained by OutboxScheduler →
@@ -12,9 +32,13 @@ import { QueueNotificationUseCase } from "../use-cases/queue-notification.use-ca
  * dispatch modules never know notifications exist; they just write
  * the outbox row.
  *
- * Recipient phones are resolved via NotificationContextProvider —
- * keeps outbox payloads PII-free (ADR 0019, A4b discipline) and
- * concentrates cross-module reads in one tested service (A4e-2).
+ * Recipient phones + push tokens are resolved via NotificationContext
+ * Provider — keeps outbox payloads PII-free (ADR 0019, A4b discipline)
+ * and concentrates cross-module reads in one tested service (A4e-2).
+ *
+ * Channel selection (A4e-3): PUSH if the customer has a registered
+ * Expo token, otherwise SMS. Drivers always receive SMS for now —
+ * driver mobile app + push registration land in A4f.
  *
  * Faz 3+ multi-instance API: in-process listener won't fan out across
  * pods. ADR 0021 revisit trigger.
@@ -52,11 +76,13 @@ export class OutboxNotificationListener {
       );
       return;
     }
+    const route = pickChannel(customer);
     await this.queueNotification.execute({
-      channel: "SMS",
+      channel: route.channel,
       kind: "BOOKING_CONFIRMED",
       recipientUserId: customer.userId,
       recipientPhone: customer.phoneE164,
+      recipientPushToken: route.recipientPushToken,
       templateKey: "booking.confirmed",
       locale: "tr",
       variables: {
@@ -78,9 +104,6 @@ export class OutboxNotificationListener {
     previousStatus: string;
     cancelledAt: string;
   }): Promise<void> {
-    // Customer is the booking owner. Even ADMIN-initiated cancels need
-    // to reach the customer — we read the booking to find them rather
-    // than trusting cancelledByUserId (which is admin id for admin path).
     void payload.cancelledByRole;
     const booking = await this.contextProvider.getBookingContext(payload.bookingId);
     if (!booking) {
@@ -92,11 +115,13 @@ export class OutboxNotificationListener {
     }
     const customer = await this.contextProvider.getCustomerContext(booking.customerId);
     if (!customer) return;
+    const route = pickChannel(customer);
     await this.queueNotification.execute({
-      channel: "SMS",
+      channel: route.channel,
       kind: "BOOKING_CANCELLED",
       recipientUserId: customer.userId,
       recipientPhone: customer.phoneE164,
+      recipientPushToken: route.recipientPushToken,
       templateKey: "booking.cancelled",
       locale: "tr",
       variables: {
@@ -120,11 +145,13 @@ export class OutboxNotificationListener {
     }
     const customer = await this.contextProvider.getCustomerContext(booking.customerId);
     if (!customer) return;
+    const route = pickChannel(customer);
     await this.queueNotification.execute({
-      channel: "SMS",
+      channel: route.channel,
       kind: "BOOKING_EXPIRED",
       recipientUserId: customer.userId,
       recipientPhone: customer.phoneE164,
+      recipientPushToken: route.recipientPushToken,
       templateKey: "booking.expired",
       locale: "tr",
       variables: {
@@ -165,8 +192,7 @@ export class OutboxNotificationListener {
     const customer = await this.contextProvider.getCustomerContext(booking.customerId);
     if (!customer) return;
 
-    // Two SMS — different recipientPhone, different kind: idempotency
-    // window does not collide (ADR 0021).
+    // Driver SMS — driver mobile app + push registration land in A4f.
     await this.queueNotification.execute({
       channel: "SMS",
       kind: "NEW_BOOKING_OFFER",
@@ -183,11 +209,14 @@ export class OutboxNotificationListener {
       sourceAggregateId: payload.bookingId,
     });
 
+    // Customer side picks the channel from the customer's push token.
+    const customerRoute = pickChannel(customer);
     await this.queueNotification.execute({
-      channel: "SMS",
+      channel: customerRoute.channel,
       kind: "DRIVER_ASSIGNED_TO_BOOKING",
       recipientUserId: customer.userId,
       recipientPhone: customer.phoneE164,
+      recipientPushToken: customerRoute.recipientPushToken,
       templateKey: "booking.driver_assigned",
       locale: "tr",
       variables: {

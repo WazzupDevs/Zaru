@@ -8,6 +8,8 @@ export interface UserBuilderInput {
   role?: UserRole;
   /** Mark phone as verified (default true — most tests skip the OTP loop). */
   phoneVerified?: boolean;
+  /** A4e-3 — pre-populate the Expo push token so the listener picks PUSH. */
+  expoPushToken?: string | null;
 }
 
 export interface BuiltUser {
@@ -15,6 +17,7 @@ export interface BuiltUser {
   phoneE164: string;
   displayName: string | null;
   role: UserRole;
+  expoPushToken: string | null;
 }
 
 /**
@@ -37,6 +40,9 @@ export async function buildUser(
       displayName: input.displayName === undefined ? "Test Müşteri" : input.displayName,
       role: input.role ?? "CUSTOMER",
       phoneVerifiedAt: input.phoneVerified === false ? null : new Date(),
+      ...(input.expoPushToken !== undefined
+        ? { expoPushToken: input.expoPushToken, pushTokenUpdatedAt: new Date() }
+        : {}),
     },
   });
   return {
@@ -44,5 +50,6 @@ export async function buildUser(
     phoneE164: created.phoneE164,
     displayName: created.displayName,
     role: created.role,
+    expoPushToken: created.expoPushToken,
   };
 }

@@ -2529,6 +2529,138 @@ Branch `feat/mobile-polish` (6 commit).
 - A4f: `apps/driver-mobile/` (sürücü tarafı, ayrı bundle)
 - A4c-payment: iyzico Marketplace adapter
 
+---
+
+## 2026-05-08 — Session A4e-3: Push Notification Completion
+
+### Done
+
+A4e'nin son dilimi — push notification end-to-end. Brief A4e-2'nin
+push infrastructure'ını "ready" sayıyordu ama gerçekte sadece
+`NotificationChannel.PUSH` enum value vardı. Push adapters, channel
+routing, User column, controller — hepsi bu oturumda landed. Branch
+`feat/push-notification-completion` (8 commit).
+
+**G1** — Schema + PII redaction
+
+- `users.expo_push_token` + `users.push_token_updated_at` columns
+  (manuel migration; `prisma migrate diff` PostGIS yüzünden false
+  drop önerdiği için manual SQL safe path)
+- `notifications.recipient_push_token` column (PUSH rows snapshot,
+  sender DB hit yapmıyor)
+- Logger PII paths: `*.expoPushToken` + `*.recipientPushToken` +
+  `req.body.expoPushToken` (push token = write capability)
+
+**G2** — UpdatePushTokenUseCase (TEST-FIRST, 8 test)
+
+- Regex doğrulama, null=clear, empty reject, soft-deleted UserNotFound
+
+**G3** — Controller + shared-types
+
+- `shared-types/identity/push-token.ts` Zod schema
+- `UsersController PATCH /users/me/push-token` → 204
+- IdentityModule wiring (UsersController + UpdatePushTokenUseCase)
+
+**G4a** — PushSenderPort + adapters + factory (BRIEF EKSİĞİ)
+
+- `PushSenderPort` SmsSenderPort shape-mirror
+- `MockPushSender` failNext/failAll paritesi
+- `ExpoPushSender` placeholder (A4g'ye kadar throw)
+- Factory: `EXPO_PUSH_PROJECT_ID` empty/`DUMMY_*` → Mock
+- 7 mock-push test
+
+**G4b** — Listener routing + SendNotification PUSH branch
+
+- `pickChannel(customer)` listener'da; token → PUSH, yoksa SMS
+- `recipientPushToken` listener → queue → notification row
+- Push title kind→title map (body SMS template ile aynı dosya)
+- 1 yeni context-provider test (token threading)
+
+**G5** — Mobile push registration
+
+- `expo-notifications` + `expo-device` install
+- `PushTokenService` (permission + Android channel + projectId guard)
+- `UsersApi.updatePushToken` + `api/index.ts` singleton barrel
+- AuthContext.login → `void registerPushToken()` fire-and-forget
+- AuthContext.logout → best-effort `updatePushToken(null)`
+- Foreground handler config root layout module load
+
+**G6** — Testcontainers spec (8 test)
+
+- PATCH happy/malformed/null
+- Customer with token → PUSH (no SMS)
+- Customer without token → SMS fallback
+- Token clear → next event SMS
+- Push fail → FAILED + retry chain triggered
+- PII discipline (outbox payload no token)
+
+**G7** — Docs
+
+- Notifications CLAUDE.md A4e-3 eklemeler + SMS fallback policy
+- `docs/development-notes.md` 9 yeni gotcha
+
+### Test sonuçları
+
+| Komut                                                        | Sonuç                          |
+| ------------------------------------------------------------ | ------------------------------ |
+| `pnpm --filter @event-fleet/api typecheck`                   | ✓                              |
+| `pnpm --filter @event-fleet/api test`                        | **299/299 PASS** (vitest unit) |
+| `pnpm --filter @event-fleet/api test:integration`            | **81/81 PASS** (+8 push chain) |
+| `pnpm --filter @event-fleet/customer-mobile typecheck`       | ✓                              |
+| `pnpm --filter @event-fleet/customer-mobile test`            | **83/83 PASS** (vitest)        |
+| `pnpm --filter @event-fleet/customer-mobile test:components` | **12/12 PASS** (jest)          |
+
+### Plandan sapmalar (gerekçeli)
+
+| Sapma                                                  | Gerekçe                                                                                                        |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| **G4a backend push adapters** brief'in dışında eklendi | Brief A4e-2'nin "push infrastructure ready" claim'ini varsayıyordu — gerçekte yoktu                            |
+| Brief 14-16 commit → **8 commit**                      | Kapsam birleştirme + minimal yeni test                                                                         |
+| Push template `.push.json` split → kind→title map      | SMS body + push body aynı; sadece title channel-spesifik                                                       |
+| Retry happy-path → "failure surfaces FAILED"           | SMS event-chain spec aynı code path'i kapsıyor (channel-agnostic SendNotification failure handler)             |
+| Migration timestamp 20260508 → 20260512                | Prisma migration order timestamp-ascending; notifications table 20260509'da, push columns sonra ALTER edilmeli |
+
+### Final commit listesi (branch)
+
+| #   | Commit  | Konu                                                                 |
+| --- | ------- | -------------------------------------------------------------------- |
+| 1   | 28bf75c | feat(db,api): add expo push token columns + extend pii redaction     |
+| 2   | (G2)    | feat(identity): add update push token use case + repo method         |
+| 3   | (G3)    | feat(identity): add PATCH /users/me/push-token endpoint              |
+| 4   | (G4a)   | feat(notifications): add push sender port + mock + expo + factory    |
+| 5   | 70a2156 | feat(notifications): channel routing + send PUSH branch              |
+| 6   | (G5)    | feat(customer-mobile): wire push token registration after OTP verify |
+| 7   | (G6)    | test(notifications): add push notification chain integration spec    |
+| 8   | 1add5e8 | docs: A4e-3 module CLAUDE.md + dev-notes additions                   |
+| 9   | (bu)    | docs: log session a4e-3 progress and mark a4e complete               |
+
+### Manuel doğrulama (gerçek cihaz gerekli — opsiyonel)
+
+1. Backend ayakta + seed
+2. `pnpm --filter @event-fleet/customer-mobile start` → Expo Go QR
+   (gerçek telefon — simulator'da Device.isDevice false → push skip)
+3. Login → permission dialog → izin ver
+4. Backend log: `push_token_obtained` + DB: `User.expoPushToken` set
+5. Booking confirm → `[MOCK PUSH] sent` + DB: `notification.channel ===
+"PUSH"` + `recipientPushToken` set
+6. Logout → DB: `User.expoPushToken === null`
+
+### Pending (A4f / A4g)
+
+- A4f: Driver mobile + driver push registration
+- A4g: Real ExpoPushSender (expo-server-sdk wiring), real
+  `EXPO_PUSH_PROJECT_ID`, DeviceNotRegistered cleanup loop, Expo
+  receipts API → DELIVERED status
+- Push deep linking (booking detail tıklayınca açılma)
+- Notification preferences / opt-out (Faz 3+)
+
+### Next
+
+- **A4e TAMAMLANDI** (3 alt-oturum: A4e-1 SMS, A4e-2 retry/DLQ, A4e-3
+  push). Notifications altyapısı production-ready (mock-first)
+- **A4f driver mobile** veya **A4c-payment** sıradaki büyük modüller
+- A4g production deploy + brand assets + EAS Build + real Expo gateway
+
 <!--
 Şablon (yeni oturum buradan başlasın):
 

@@ -50,6 +50,8 @@ function buildUser(): UserRecord {
     role: "CUSTOMER",
     phoneVerifiedAt: NOW,
     lastLoginAt: NOW,
+    expoPushToken: null,
+    pushTokenUpdatedAt: null,
     createdAt: NOW,
   };
 }
@@ -67,6 +69,7 @@ function buildMocks(
     findActiveById: vi.fn().mockResolvedValue(user),
     createVerified: vi.fn(),
     touchLastLogin: vi.fn().mockResolvedValue(undefined),
+    updatePushToken: vi.fn().mockResolvedValue(undefined),
   };
 
   const refreshRepo: RefreshTokenRepositoryPort = {

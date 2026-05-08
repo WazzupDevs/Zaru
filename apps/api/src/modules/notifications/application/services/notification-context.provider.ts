@@ -22,6 +22,9 @@ export interface NotificationCustomerContext {
   userId: string;
   displayName: string | null;
   phoneE164: string;
+  /** A4e-3 — null when the customer hasn't registered for push. The
+   * listener picks PUSH when present, SMS otherwise. */
+  expoPushToken: string | null;
 }
 
 export interface NotificationDriverContext {
@@ -78,6 +81,7 @@ export class NotificationContextProvider {
       userId: user.id,
       displayName: user.displayName,
       phoneE164: user.phoneE164,
+      expoPushToken: user.expoPushToken,
     };
   }
 

@@ -26,6 +26,10 @@ export interface QueueNotificationInput {
   kind: NotificationKind;
   recipientUserId: string | null;
   recipientPhone: string;
+  /** A4e-3 — must be set for channel=PUSH, ignored for SMS. The listener
+   * always passes both phone + token so a future channel switch (admin
+   * retries a dead-lettered PUSH as SMS) doesn't lose the fallback. */
+  recipientPushToken?: string | null;
   templateKey: string;
   locale: string;
   variables: Record<string, string | number>;
@@ -82,6 +86,7 @@ export class QueueNotificationUseCase {
         kind: input.kind,
         recipientUserId: input.recipientUserId,
         recipientPhone: input.recipientPhone,
+        recipientPushToken: input.recipientPushToken ?? null,
         templateKey: input.templateKey,
         locale: input.locale,
         renderedBody,
