@@ -35,6 +35,12 @@ export const envSchema = z.object({
   NOTIFICATION_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(5),
   NOTIFICATION_BACKOFF_DELAY_MS: z.coerce.number().int().positive().default(2_000),
 
+  // --- Expo push (A4e-3) — ADR 0021 amended ---
+  // Empty (default) or `DUMMY_*` prefix routes to MockPushSender so dev
+  // + test work with no Expo account. A real UUID lights up the Expo
+  // gateway via ExpoPushSender — wired end-to-end in A4g.
+  EXPO_PUSH_PROJECT_ID: z.string().default(""),
+
   SENTRY_DSN: z.string().url().optional(),
 
   // --- PII hashing (A3b) ---

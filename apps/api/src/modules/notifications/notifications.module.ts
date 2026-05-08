@@ -12,6 +12,7 @@ import {
   NOTIFICATION_DEAD_LETTER_REPOSITORY_PORT,
   NOTIFICATION_REPOSITORY_PORT,
 } from "./application/ports/notification.repository.port";
+import { PUSH_SENDER_PORT, type PushSenderPort } from "./application/ports/push-sender.port";
 import { SMS_SENDER_PORT, type SmsSenderPort } from "./application/ports/sms-sender.port";
 import { TEMPLATE_RENDERER_PORT } from "./application/ports/template-renderer.port";
 import { NotificationContextProvider } from "./application/services/notification-context.provider";
@@ -26,6 +27,8 @@ import { QueueNotificationUseCase } from "./application/use-cases/queue-notifica
 import { SendNotificationUseCase } from "./application/use-cases/send-notification.use-case";
 import { PrismaNotificationDeadLetterRepository } from "./infrastructure/persistence/prisma-notification-dead-letter.repository";
 import { PrismaNotificationRepository } from "./infrastructure/persistence/prisma-notification.repository";
+import { ExpoPushSender } from "./infrastructure/senders/expo-push-sender";
+import { MockPushSender } from "./infrastructure/senders/mock-push-sender";
 import { MockSmsSender } from "./infrastructure/senders/mock-sms-sender";
 import { NetgsmSmsSender } from "./infrastructure/senders/netgsm-sms-sender";
 import { TemplateRenderer } from "./infrastructure/templates/template-renderer";
@@ -39,27 +42,30 @@ import type { Env } from "../../config/env";
 
 const NETGSM_LOGGER_TOKEN = getLoggerToken(NetgsmSmsSender.name);
 const MOCK_LOGGER_TOKEN = getLoggerToken(MockSmsSender.name);
+const MOCK_PUSH_LOGGER_TOKEN = getLoggerToken(MockPushSender.name);
+const EXPO_PUSH_LOGGER_TOKEN = getLoggerToken(ExpoPushSender.name);
 
 /**
- * Notifications module — A4e-1.
+ * Notifications module — A4e-1 / A4e-2 / A4e-3.
  *
- * Wires the SMS provider abstraction (factory: dummy NETGSM_USERCODE
- * → MockSmsSender, otherwise NetgsmSmsSender) and the outbox listener
- * that bridges in-process events to the BullMQ queue. Exports the
- * SmsSenderPort + TemplateRenderer so IdentityModule can render and
- * send the OTP SMS without keeping its own copy of the adapters.
+ * Wires the SMS + push provider abstractions and the outbox listener
+ * that bridges in-process events to the BullMQ queue.
+ *
+ * Factories:
+ *   SMS — NETGSM_USERCODE starts with `DUMMY_` → MockSmsSender,
+ *         otherwise NetgsmSmsSender (ADR 0021).
+ *   PUSH — EXPO_PUSH_PROJECT_ID is empty OR starts with `DUMMY_` →
+ *          MockPushSender, otherwise ExpoPushSender. The empty default
+ *          in env.ts means dev + test work with no Expo account; A4g
+ *          flips a real UUID into the env to light up the gateway.
  *
  * IdentityModule is imported because the OutboxNotificationListener
- * resolves recipient phones via UserRepositoryPort (kept PII-free in
- * outbox payloads, A4b discipline).
+ * resolves recipient phone + push token via UserRepositoryPort (kept
+ * PII-free in outbox payloads, A4b discipline).
  */
 @Module({
   imports: [
     forwardRef(() => IdentityModule),
-    // BookingModule + SupplyModule have no back-import to Notifications,
-    // so plain imports are safe (no forwardRef needed). The listener's
-    // NotificationContextProvider injects BOOKING_REPOSITORY_PORT,
-    // DRIVER_PROFILE_REPOSITORY_PORT, VEHICLE_REPOSITORY_PORT.
     BookingModule,
     SupplyModule,
     BullModule.registerQueue({ name: NOTIFICATION_QUEUE_NAME }),
@@ -80,6 +86,8 @@ const MOCK_LOGGER_TOKEN = getLoggerToken(MockSmsSender.name);
     DeadLetterNotificationUseCase,
     MockSmsSender,
     NetgsmSmsSender,
+    MockPushSender,
+    ExpoPushSender,
     {
       provide: SMS_SENDER_PORT,
       useFactory: (
@@ -95,6 +103,21 @@ const MOCK_LOGGER_TOKEN = getLoggerToken(MockSmsSender.name);
       },
       inject: [ConfigService, MOCK_LOGGER_TOKEN, NETGSM_LOGGER_TOKEN],
     },
+    {
+      provide: PUSH_SENDER_PORT,
+      useFactory: (
+        config: ConfigService<Env, true>,
+        mockLogger: PinoLogger,
+        expoLogger: PinoLogger,
+      ): PushSenderPort => {
+        const projectId = config.get("EXPO_PUSH_PROJECT_ID", { infer: true });
+        if (projectId === "" || projectId.startsWith("DUMMY_")) {
+          return new MockPushSender(mockLogger);
+        }
+        return new ExpoPushSender(expoLogger);
+      },
+      inject: [ConfigService, MOCK_PUSH_LOGGER_TOKEN, EXPO_PUSH_LOGGER_TOKEN],
+    },
     QueueNotificationUseCase,
     SendNotificationUseCase,
     ListNotificationsUseCase,
@@ -104,9 +127,12 @@ const MOCK_LOGGER_TOKEN = getLoggerToken(MockSmsSender.name);
     OutboxNotificationListener,
     NotificationWorker,
   ],
-  // SmsSenderPort + TemplateRenderer for IdentityModule (OTP).
-  // MockSmsSender exported by name so smoke + integration tests can
-  // peek into the inbox in dev/test.
-  exports: [SMS_SENDER_PORT, TEMPLATE_RENDERER_PORT, MockSmsSender],
+  exports: [
+    SMS_SENDER_PORT,
+    PUSH_SENDER_PORT,
+    TEMPLATE_RENDERER_PORT,
+    MockSmsSender,
+    MockPushSender,
+  ],
 })
 export class NotificationsModule {}
