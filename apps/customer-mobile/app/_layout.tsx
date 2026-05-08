@@ -4,6 +4,13 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { AuthProvider } from "../src/contexts/auth-context";
+import { PushTokenService } from "../src/lib/push/push-token-service";
+
+// Foreground notification behavior — show OS alert + play sound when
+// a push lands while the app is open. Without this, foregrounded
+// pushes fire silently into the data handler only. Idempotent; runs
+// once at module load.
+PushTokenService.configureForegroundBehavior();
 
 import "../global.css";
 

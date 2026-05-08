@@ -3,6 +3,7 @@ import { createBookingApi } from "./booking";
 import { createCatalogApi } from "./catalog";
 import { createApiClient, type ApiClient } from "./client";
 import { createPricingApi } from "./pricing";
+import { createUsersApi } from "./users";
 import { clearSession, getTokens, setTokens } from "../storage/secure-token-storage";
 
 /**
@@ -20,5 +21,6 @@ export const authApi = createAuthApi(apiClient);
 export const catalogApi = createCatalogApi(apiClient);
 export const pricingApi = createPricingApi(apiClient);
 export const bookingApi = createBookingApi(apiClient);
+export const usersApi = createUsersApi(apiClient);
 
 export { apiClient };
