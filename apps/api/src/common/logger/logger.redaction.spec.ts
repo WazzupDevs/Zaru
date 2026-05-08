@@ -14,10 +14,13 @@ const REDACT_PATHS = [
   "req.body.password",
   "req.body.phoneE164",
   "req.body.tokenHash",
+  "req.body.expoPushToken",
   "*.phoneE164",
   "*.tokenHash",
   "*.password",
   "*.otp",
+  "*.expoPushToken",
+  "*.recipientPushToken",
 ];
 
 function captureLog(message: string, payload: unknown): string {
@@ -63,6 +66,30 @@ describe("logger redaction", () => {
     });
     expect(out).not.toContain("+905551234567");
     expect(out).not.toContain("abc123hash");
+  });
+
+  it("redacts expoPushToken anywhere via wildcard (A4e-3)", () => {
+    const out = captureLog("user_loaded", {
+      user: { id: "u1", expoPushToken: "ExponentPushToken[abc123]" },
+    });
+    expect(out).not.toContain("ExponentPushToken[abc123]");
+    expect(out).toContain("[Redacted]");
+  });
+
+  it("redacts recipientPushToken on notification rows (A4e-3)", () => {
+    const out = captureLog("notification_sent", {
+      notification: { id: "n1", recipientPushToken: "ExponentPushToken[xyz]" },
+    });
+    expect(out).not.toContain("ExponentPushToken[xyz]");
+    expect(out).toContain("[Redacted]");
+  });
+
+  it("redacts expoPushToken in controller request body (A4e-3)", () => {
+    const out = captureLog("patch_push_token", {
+      req: { body: { expoPushToken: "ExponentPushToken[push]" } },
+    });
+    expect(out).not.toContain("ExponentPushToken[push]");
+    expect(out).toContain("[Redacted]");
   });
 
   it("does not redact non-sensitive fields", () => {

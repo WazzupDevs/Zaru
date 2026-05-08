@@ -30,16 +30,24 @@ enum OtpPurpose {
 }
 
 model User {
-  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  phoneE164       String    @map("phone_e164")
-  displayName     String?   @map("display_name")
-  role            UserRole  @default(CUSTOMER)
-  tenantId        String?   @map("tenant_id") @db.Uuid
-  phoneVerifiedAt DateTime? @map("phone_verified_at")
-  lastLoginAt     DateTime? @map("last_login_at")
-  createdAt       DateTime  @default(now()) @map("created_at")
-  updatedAt       DateTime  @updatedAt @map("updated_at")
-  deletedAt       DateTime? @map("deleted_at")
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  phoneE164          String    @map("phone_e164")
+  displayName        String?   @map("display_name")
+  role               UserRole  @default(CUSTOMER)
+  tenantId           String?   @map("tenant_id") @db.Uuid
+  phoneVerifiedAt    DateTime? @map("phone_verified_at")
+  lastLoginAt        DateTime? @map("last_login_at")
+  // A4e-3 — push token, set after the mobile app obtains it from
+  // expo-notifications.getExpoPushTokenAsync(). Nullable: the user may
+  // have denied permission, be on a simulator, or have logged in from
+  // a build that pre-dates push registration. Listener treats null as
+  // "fall back to SMS". `pushTokenUpdatedAt` lets the worker prune
+  // stale tokens (Expo invalidates after ~6 months of inactivity).
+  expoPushToken      String?   @map("expo_push_token")
+  pushTokenUpdatedAt DateTime? @map("push_token_updated_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+  deletedAt          DateTime? @map("deleted_at")
 
   refreshTokens     RefreshToken[]
   driverProfile     DriverProfile?
@@ -163,13 +171,18 @@ enum NotificationKind {
 }
 
 model Notification {
-  id              String              @id @default(dbgenerated("uuidv7()")) @db.Uuid
-  channel         NotificationChannel
-  kind            NotificationKind
-  recipientUserId String?             @map("recipient_user_id") @db.Uuid
+  id                 String              @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  channel            NotificationChannel
+  kind               NotificationKind
+  recipientUserId    String?             @map("recipient_user_id") @db.Uuid
   // Plaintext on purpose — provider call needs the raw phone. Log
   // redaction masks `*.recipientPhone`. Stored for audit + replay.
-  recipientPhone  String              @map("recipient_phone")
+  recipientPhone     String              @map("recipient_phone")
+  // A4e-3 — populated for PUSH channel rows so the sender can call
+  // expo-server-sdk without a second DB hit. Mirrors recipientPhone for
+  // SMS rows: stored on the notification (not joined from User) so a
+  // post-hoc token rotation on the User row doesn't change replay shape.
+  recipientPushToken String?             @map("recipient_push_token")
 
   templateKey  String @map("template_key") // "booking.confirmed"
   locale       String @default("tr")
