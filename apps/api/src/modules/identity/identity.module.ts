@@ -11,6 +11,7 @@ import {
 import { USER_REPOSITORY_PORT } from "./application/ports/user.repository.port";
 import { RefreshTokensUseCase } from "./application/use-cases/refresh-tokens.use-case";
 import { RequestOtpUseCase } from "./application/use-cases/request-otp.use-case";
+import { UpdatePushTokenUseCase } from "./application/use-cases/update-push-token.use-case";
 import { VerifyOtpUseCase } from "./application/use-cases/verify-otp.use-case";
 import { InMemoryTestOtpCache, NoopTestOtpCache } from "./infrastructure/in-memory-test-otp-cache";
 import { JwtTokenService } from "./infrastructure/jwt/jwt-token.service";
@@ -19,6 +20,7 @@ import { PrismaRefreshTokenRepository } from "./infrastructure/persistence/prism
 import { PrismaUserRepository } from "./infrastructure/persistence/prisma-user.repository";
 import { AuthController } from "./interface/controllers/auth.controller";
 import { TestOnlyController } from "./interface/controllers/test-only.controller";
+import { UsersController } from "./interface/controllers/users.controller";
 
 // Test-only OTP cache: real impl in dev/test, no-op in production. The
 // controller is also gated below — defense in depth.
@@ -34,11 +36,12 @@ const isProduction = process.env.NODE_ENV === "production";
   // RequestOtpUseCase now consumes the shared SmsSenderPort +
   // TemplateRenderer from NotificationsModule.
   imports: [forwardRef(() => NotificationsModule)],
-  controllers: [AuthController, ...(isProduction ? [] : [TestOnlyController])],
+  controllers: [AuthController, UsersController, ...(isProduction ? [] : [TestOnlyController])],
   providers: [
     RequestOtpUseCase,
     VerifyOtpUseCase,
     RefreshTokensUseCase,
+    UpdatePushTokenUseCase,
     { provide: OTP_REQUEST_REPOSITORY_PORT, useClass: PrismaOtpRequestRepository },
     { provide: USER_REPOSITORY_PORT, useClass: PrismaUserRepository },
     { provide: REFRESH_TOKEN_REPOSITORY_PORT, useClass: PrismaRefreshTokenRepository },
