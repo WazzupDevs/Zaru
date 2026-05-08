@@ -1,4 +1,4 @@
-# Notifications Module (A4e-1)
+# Notifications Module (A4e-1 / A4e-2 / A4e-3)
 
 ## Sorumluluk
 
@@ -63,3 +63,41 @@ SendNotificationUseCase
 - Admin monitoring controller (queue depth, failed list, replay)
 - Provider delivery callback (DELIVERED status)
 - Testcontainers integration spec
+
+## A4e-3 eklemeler (mevcut)
+
+- **PushSenderPort + MockPushSender + ExpoPushSender + factory**
+  Factory `EXPO_PUSH_PROJECT_ID` empty / `DUMMY_*` → Mock; real UUID
+  → ExpoPushSender (placeholder, A4g'de gerçek gateway).
+- **Channel routing** — Listener `pickChannel(customer)` ile
+  expoPushToken varsa PUSH, yoksa SMS. Driver tarafı SMS-only kalır
+  (driver mobile + push registration A4f'de).
+- **`recipientPushToken` Notification row'unda** — SMS rows için null,
+  PUSH rows için listener tarafından dolduruluyor. Sender DB hit
+  olmadan dispatch eder; admin retry channel mutate ederse fallback
+  hedef hala kayıtta.
+- **`PATCH /users/me/push-token`** — `UpdatePushTokenUseCase` +
+  `UsersController`. shared-types `UpdatePushTokenInputSchema` Zod
+  regex `/^ExponentPushToken\[[A-Za-z0-9_-]+\]$/` ile şape doğrulama;
+  `null` body explicit clear.
+- **PII redaction** `*.expoPushToken` + `*.recipientPushToken` +
+  `req.body.expoPushToken` log path'leri (push token write
+  capability — leaked token = anyone can send to that device).
+- **Push title** kind→title mapping `services/push-titles.ts`
+  (Türkçe). Body SMS template ile aynı dosyadan render — ayrı
+  `.push.json` format YOK.
+
+## SMS fallback policy (kritik)
+
+Token varsa otomatik PUSH, yoksa SMS — listener'da kararlaştırılır.
+Token clear edilirse (`PATCH null`) bir sonraki event SMS'e döner.
+Push send başarısız olursa retry/DLQ yine devreye girer (A4e-2 zinciri
+channel-agnostic). Kullanıcı hiçbir bildirimi kaçırmaz.
+
+## A4f / A4g'ye devredilenler
+
+- **A4f** — Driver app + driver push registration (driver tarafı şu an
+  SMS-only). Aynı `pickChannel` patterni driver context'e genişler.
+- **A4g** — Real ExpoPushSender (expo-server-sdk wiring), real
+  `EXPO_PUSH_PROJECT_ID`, DeviceNotRegistered cleanup loop, provider
+  delivery callback (Expo receipts API → DELIVERED status).

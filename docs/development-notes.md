@@ -197,6 +197,118 @@ calls setState on an unmounted provider. Suppress with a one-line
 
 ---
 
+## 2026-05-08 — Session A4e-3 (push notification completion)
+
+### Brief lied about A4e-2's push surface
+
+Brief said "A4e-2 backend infrastructure ready: User schema'da
+expoPushToken field var" — it wasn't. A4e-2 added `PUSH` to the
+`NotificationChannel` enum and stopped there: no PushSenderPort, no
+adapters, no factory, no User column, no controller. SendNotification
+UseCase explicitly threw on any non-SMS channel.
+
+Verify before trusting any "ready" claim. The grep that caught it:
+
+```
+grep -rn "expoPushToken\|PushSender\|MockPush\|ExpoPushSender" apps/api/src/
+```
+
+Negative result + the enum-only PUSH value were the giveaway.
+
+### Prisma migration timestamp must sort AFTER tables it ALTERs
+
+I named my migration `20260508000000_add_push_tokens` based on the
+session date — but the notifications table migration is dated
+`20260509...`. Migration order is timestamp-ascending, so the ALTER
+ran against a table that didn't exist yet. Renamed to
+`20260512000000_add_push_tokens` (after both notification migrations).
+
+Future-me: when authoring a migration that touches a table from a
+later-dated migration, bump the timestamp past it. The session date is
+not load-bearing — Prisma cares only about lexicographic order.
+
+### `prisma migrate diff --from-schema-datasource` reports false drops
+
+Running `prisma migrate diff --from-schema-datasource ... --to-schema-
+datamodel ... --script` to generate migration SQL emitted a
+`DROP COLUMN driver_profiles.last_known_location` line. That column
+exists in the DB (PostGIS geography type) but Prisma can't represent
+it — declared via `Unsupported` annotations only. The diff sees
+"missing from schema → drop it".
+
+Solution: write the migration SQL by hand for any project that uses
+PostGIS. The diff tool is not safe to use against the live schema.
+
+### `migrate dev --create-only` requires interactive shell
+
+Same workflow A1's docs already noted for `migrate dev`: TTY-less
+shells (Claude / CI) hang at the migration name prompt. Use
+`prisma migrate diff` for SQL generation + manual file creation +
+`prisma migrate deploy` to apply.
+
+### `setupFiles` race in vitest globalSetup
+
+The integration global setup does `execSync("pnpm prisma migrate
+deploy")` AFTER S3 bucket policy setup. When the deploy fails (e.g.,
+my migration ran out of order), the error stack points at the S3 line
+above it because that's where the JS line numbers happen to land.
+Read the actual `Error: Command failed: ...` text, not the line number.
+
+### Push token redaction is a write-capability concern
+
+A leaked Expo push token isn't just PII — it's a write capability.
+Anyone with the token can send arbitrary push notifications to that
+device. Treat it like an access token in logs:
+
+```ts
+"*.expoPushToken",
+"*.recipientPushToken",
+"req.body.expoPushToken",
+```
+
+The mobile-side Logger already redacts `/phone|recipient|password|
+token|secret/i` — `expoPushToken` matches `token` and is masked.
+
+### Channel routing lives in the listener, not the worker
+
+The listener picks PUSH or SMS at queue time based on the customer's
+expoPushToken. The worker (SendNotificationUseCase) is channel-
+agnostic — it reads `notification.channel` and dispatches to the
+matching sender. This means an admin retry that flips the channel on
+a dead-lettered row will dispatch through the new channel without any
+extra wiring; it also means the listener decision is "frozen" into
+the row at queue time, so a token rotation between queue and send
+doesn't cause a mid-flight channel switch.
+
+The recipientPhone is ALWAYS populated (even on PUSH rows) so the
+fallback target is preserved if an admin manually flips channel after
+a PUSH dead-letter.
+
+### MockPushSender mirrors MockSmsSender on purpose
+
+Same shape (`failNext` / `failAll` / `clearFailure` / `getInbox` /
+`getLastFor` / `clear` / `_testOnlyReset`). Lets the integration spec
+mirror the SMS retry/DLQ shape without learning a new failure-
+injection vocabulary. The retry happy-path test was deferred to
+"failure surfaces FAILED" — the SMS event-chain spec already covers
+the full N-attempt-then-succeed path through identical code.
+
+### MockPushSender + MockSmsSender DI in the integration spec
+
+Both senders need to be type-asserted with `instanceof` checks at
+beforeAll:
+
+```ts
+const push = app.get<PushSenderPort>(PUSH_SENDER_PORT);
+if (!(push instanceof MockPushSender)) throw new Error("...");
+```
+
+The factory selects the real ExpoPushSender if `EXPO_PUSH_PROJECT_ID`
+is a real UUID — the assertion catches a misconfigured test env that
+would otherwise silently call the prod gateway.
+
+---
+
 ## 2026-05-07 — Session A4d-3 (mobile polish)
 
 ### Jest + pnpm `transformIgnorePatterns` needs TWO patterns
