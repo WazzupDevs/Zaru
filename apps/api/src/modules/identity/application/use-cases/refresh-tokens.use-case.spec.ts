@@ -50,6 +50,8 @@ function buildUser(): UserRecord {
     role: "CUSTOMER",
     phoneVerifiedAt: NOW,
     lastLoginAt: NOW,
+    expoPushToken: null,
+    pushTokenUpdatedAt: null,
     createdAt: NOW,
   };
 }

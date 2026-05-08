@@ -20,6 +20,9 @@ export interface NotificationEntity {
   kind: NotificationKind;
   recipientUserId: string | null;
   recipientPhone: string;
+  /** A4e-3 — populated for PUSH rows. Null on SMS rows + on PUSH rows
+   * created before the column existed (pre-A4e-3 backfill). */
+  recipientPushToken: string | null;
   templateKey: string;
   locale: string;
   renderedBody: string;

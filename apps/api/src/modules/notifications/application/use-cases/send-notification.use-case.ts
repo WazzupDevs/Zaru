@@ -8,7 +8,9 @@ import {
   NOTIFICATION_REPOSITORY_PORT,
   type NotificationRepositoryPort,
 } from "../ports/notification.repository.port";
+import { PUSH_SENDER_PORT, type PushSenderPort } from "../ports/push-sender.port";
 import { SMS_SENDER_PORT, type SmsSenderPort } from "../ports/sms-sender.port";
+import { pushTitleFor } from "../services/push-titles";
 
 export interface SendNotificationInput {
   notificationId: string;
@@ -28,6 +30,7 @@ export class SendNotificationUseCase {
     @Inject(NOTIFICATION_REPOSITORY_PORT)
     private readonly repo: NotificationRepositoryPort,
     @Inject(SMS_SENDER_PORT) private readonly smsSender: SmsSenderPort,
+    @Inject(PUSH_SENDER_PORT) private readonly pushSender: PushSenderPort,
     @Inject(TX_RUNNER_PORT) private readonly tx: TxRunnerPort,
     @Inject(CLOCK_PORT) private readonly clock: ClockPort,
     @InjectPinoLogger(SendNotificationUseCase.name)
@@ -63,19 +66,44 @@ export class SendNotificationUseCase {
 
     const attemptedAt = this.clock.now();
     try {
-      if (notification.channel !== "SMS") {
-        throw new Error(`Channel ${notification.channel} is not wired in A4e-1`);
+      let providerMessageId: string;
+      let sentAt: Date;
+      if (notification.channel === "SMS") {
+        const result = await this.smsSender.send({
+          phone: notification.recipientPhone,
+          message: notification.renderedBody,
+          sourceId: notification.id,
+        });
+        providerMessageId = result.providerMessageId;
+        sentAt = result.sentAt;
+      } else if (notification.channel === "PUSH") {
+        if (!notification.recipientPushToken) {
+          // Defensive: the listener guarantees PUSH rows have a token,
+          // but a stale row from before A4e-3 (or an admin retry that
+          // mutated the channel without setting a token) would land
+          // here. Throwing fast triggers the standard retry/DLQ path
+          // instead of silently swallowing the notification.
+          throw new Error("PUSH channel notification missing recipientPushToken");
+        }
+        const result = await this.pushSender.send({
+          expoPushToken: notification.recipientPushToken,
+          title: pushTitleFor(notification.kind),
+          body: notification.renderedBody,
+          sourceId: notification.id,
+          data: {
+            kind: notification.kind,
+            ...(notification.sourceAggregateId !== null
+              ? { sourceAggregateId: notification.sourceAggregateId }
+              : {}),
+          },
+        });
+        providerMessageId = result.providerMessageId;
+        sentAt = result.sentAt;
+      } else {
+        throw new Error(`Channel ${notification.channel} is not wired (only SMS + PUSH supported)`);
       }
-      const result = await this.smsSender.send({
-        phone: notification.recipientPhone,
-        message: notification.renderedBody,
-        sourceId: notification.id,
-      });
       await this.tx.run((tx) =>
-        this.repo.markSent(tx, notification.id, {
-          providerMessageId: result.providerMessageId,
-          sentAt: result.sentAt,
-        }),
+        this.repo.markSent(tx, notification.id, { providerMessageId, sentAt }),
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

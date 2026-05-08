@@ -20,6 +20,8 @@ function makeUser(overrides: Partial<UserRecord> = {}): UserRecord {
     role: "CUSTOMER",
     phoneVerifiedAt: NOW,
     lastLoginAt: NOW,
+    expoPushToken: null,
+    pushTokenUpdatedAt: null,
     createdAt: NOW,
     ...overrides,
   };

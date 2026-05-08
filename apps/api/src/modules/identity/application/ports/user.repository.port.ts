@@ -11,6 +11,11 @@ export interface UserRecord {
   role: UserRole;
   phoneVerifiedAt: Date | null;
   lastLoginAt: Date | null;
+  /** A4e-3 — null when the user hasn't registered for push (no Expo
+   * permission, simulator, pre-A4e-3 build). Listener treats null as
+   * "fall back to SMS". */
+  expoPushToken: string | null;
+  pushTokenUpdatedAt: Date | null;
   createdAt: Date;
 }
 

@@ -75,6 +75,8 @@ interface UserRow {
   role: "CUSTOMER" | "DRIVER" | "ADMIN" | "SUPPORT";
   phoneVerifiedAt: Date | null;
   lastLoginAt: Date | null;
+  expoPushToken: string | null;
+  pushTokenUpdatedAt: Date | null;
   createdAt: Date;
 }
 
@@ -86,6 +88,8 @@ function toRecord(row: UserRow): UserRecord {
     role: row.role,
     phoneVerifiedAt: row.phoneVerifiedAt,
     lastLoginAt: row.lastLoginAt,
+    expoPushToken: row.expoPushToken,
+    pushTokenUpdatedAt: row.pushTokenUpdatedAt,
     createdAt: row.createdAt,
   };
 }
