@@ -1,0 +1,24 @@
+node_modules/
+.expo/
+dist/
+web-build/
+
+# Native build outputs (eas build / expo prebuild) — A4g.
+ios/
+android/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Expo router types
+expo-env.d.ts
+
+# Logs
+*.log
+.metro-health-check*
+
+# Local env (mirror customer mobile)
+.env
+.env.local
