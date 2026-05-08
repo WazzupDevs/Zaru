@@ -24,6 +24,7 @@ const SOFT_DELETE_MODELS = new Set<string>([
   "Document",
   "VehicleAvailability",
   "Booking",
+  "DriverInvite",
 ]);
 
 /**

@@ -70,6 +70,7 @@ function buildMocks(
     createVerified: vi.fn(),
     touchLastLogin: vi.fn().mockResolvedValue(undefined),
     updatePushToken: vi.fn().mockResolvedValue(undefined),
+    updateRole: vi.fn().mockResolvedValue(undefined),
   };
 
   const refreshRepo: RefreshTokenRepositoryPort = {

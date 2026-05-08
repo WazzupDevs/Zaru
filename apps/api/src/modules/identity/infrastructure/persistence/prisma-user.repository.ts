@@ -48,6 +48,17 @@ export class PrismaUserRepository implements UserRepositoryPort {
     });
   }
 
+  async updateRole(
+    tx: TxClient,
+    userId: string,
+    role: "CUSTOMER" | "DRIVER" | "ADMIN" | "SUPPORT",
+  ): Promise<void> {
+    await tx.user.update({
+      where: { id: userId },
+      data: { role },
+    });
+  }
+
   async updatePushToken(
     tx: TxClient,
     params: { userId: string; expoPushToken: string | null; at: Date },

@@ -36,6 +36,14 @@ export interface UserRepositoryPort {
   touchLastLogin(tx: TxClient, userId: string, loggedInAt: Date): Promise<void>;
 
   /**
+   * A4f-1 — promote a User to DRIVER role after invite acceptance.
+   * Idempotent at the SQL layer (UPDATE with where role != ? would
+   * skip writes when already DRIVER, but we don't bother — the cost
+   * of a no-op write is one tuple touch).
+   */
+  updateRole(tx: TxClient, userId: string, role: UserRole): Promise<void>;
+
+  /**
    * Set or clear the user's Expo push token. Pass `null` to clear (e.g.,
    * the mobile app revoked permission). `pushTokenUpdatedAt` is always
    * stamped with `at` regardless of whether the token actually changed —

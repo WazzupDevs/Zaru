@@ -38,6 +38,18 @@ export class PiiHasher {
     return timingSafeEqual(a, b);
   }
 
+  /**
+   * Phone numbers used as a deterministic lookup key (driver invite
+   * whitelist, A4f-1). Same HMAC pattern as TCKN — deterministic so
+   * the listener can do a single-row index hit, secret rotation via
+   * dual-write window. The clear `phone_e164` is also stored for
+   * admin display, so the hash protects against a leaked DB dump
+   * being trivially harvestable as a phone-number list.
+   */
+  hashPhone(phoneE164: string): string {
+    return createHmac("sha256", this.hmacSecret).update(phoneE164).digest("hex");
+  }
+
   async hashIban(iban: string): Promise<string> {
     return argon2.hash(iban, { type: argon2.argon2id });
   }

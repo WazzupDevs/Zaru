@@ -40,6 +40,7 @@ describe("UpdatePushTokenUseCase", () => {
       createVerified: vi.fn(),
       touchLastLogin: vi.fn(),
       updatePushToken: vi.fn(() => Promise.resolve()),
+      updateRole: vi.fn(() => Promise.resolve()),
     };
     tx = {
       run: vi.fn(<T>(fn: (txClient: unknown) => Promise<T>) => fn({})) as TxRunnerPort["run"],
