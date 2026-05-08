@@ -2661,6 +2661,121 @@ routing, User column, controller — hepsi bu oturumda landed. Branch
 - **A4f driver mobile** veya **A4c-payment** sıradaki büyük modüller
 - A4g production deploy + brand assets + EAS Build + real Expo gateway
 
+---
+
+## 2026-05-08 — Session A4f-1a: Driver Mobile — Backend Whitelist + Scaffold + Auth
+
+### Done
+
+A4f başladı. Brief 14-16 commit / 5-6 saat hedefliyordu; realistik
+scope-out ile A4f-1a + A4f-1b'ye böldüm. A4f-1a backend foundation +
+driver mobile scaffold + auth kapsadı. Branch `feat/driver-mobile-auth`
+(5 commit + bu).
+
+**G1** — Backend whitelist
+
+- Prisma `driver_invites` (phone clear + hash + status + audit fields)
+- Domain errors: `DriverNotInvitedError` (403),
+  `DriverInviteNotFoundError` (404),
+  `DriverInviteAlreadyAcceptedError` (409)
+- Use cases (TEST-FIRST, 21 test):
+  - `CreateDriverInviteUseCase` admin-only, idempotent on PENDING
+  - `CheckDriverWhitelistUseCase` PENDING + ACCEPTED kabul
+  - `AcceptDriverInviteUseCase` atomik invite ACCEPTED + role DRIVER +
+    outbox event. **DriverProfile auto-create yok** — TCKN/IBAN
+    olmadan oluşturulamaz; supply onboarding flow'u devralır
+  - `RevokeDriverInviteUseCase` admin-only, ACCEPTED reddeder
+- `PiiHasher.hashPhone` HMAC-SHA256
+- `UserRepositoryPort.updateRole` yeni method
+
+**G2** — Driver auth + admin invite endpoints (6 integration test)
+
+- shared-types `driver-invite.ts` schema
+- `POST /auth/driver/otp/request` whitelist gate ÖNCE SMS
+- `POST /auth/driver/otp/verify` verify + AcceptDriverInvite zinciri
+- `/admin/driver-invites` POST/GET/PATCH:revoke (RolesGuard ADMIN)
+
+**G3+G4+G5** — Driver mobile scaffold + auth + role guards
+
+- `apps/driver-mobile/` Expo SDK 52 (customer-mobile pattern reuse)
+- Brand placeholder: black + safety-green + online/offline tokens
+- Driver auth API Zod role literal "DRIVER" + `WrongAppRoleError`
+- Storage SESSION_KEY namespaced (`event_fleet_driver_auth_session_v1`)
+- Phone screen `DRIVER_NOT_INVITED` translation
+- Customer mobile symmetric guard: `CustomerAuthUserSchema` accept
+  CUSTOMER + ADMIN + SUPPORT, reject DRIVER
+- `apps/driver-mobile/CLAUDE.md` modül kuralları
+
+### Test sonuçları
+
+| Komut                                                  | Sonuç                             |
+| ------------------------------------------------------ | --------------------------------- |
+| `pnpm --filter @event-fleet/api typecheck`             | ✓                                 |
+| `pnpm --filter @event-fleet/api test`                  | **320/320 PASS** (vitest unit)    |
+| `pnpm --filter @event-fleet/api test:integration`      | **87/87 PASS** (+6 driver invite) |
+| `pnpm --filter @event-fleet/customer-mobile typecheck` | ✓                                 |
+| `pnpm --filter @event-fleet/customer-mobile test`      | **83/83 PASS**                    |
+| `pnpm --filter @event-fleet/driver-mobile typecheck`   | ✓                                 |
+
+### Plandan sapmalar
+
+| Sapma                                                 | Gerekçe                                                                           |
+| ----------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Brief 14-16 commit → **6 commit** (A4f-1a)            | Online/location/push UX kararları ayrı oturumu hak ediyor (A4f-1b)                |
+| AcceptDriverInvite **DriverProfile auto-create YOK**  | Schema TCKN/IBAN/birthDate zorunlu; supply'ın CreateDriverProfileUseCase devralır |
+| Mobile component reuse → `packages/mobile-shared` YOK | Erken abstraction değil; 3. app görünmeden copy-paste daha temiz                  |
+| Customer guard ADMIN + SUPPORT da kabul               | Admin customer app'te review/impersonation yapabilmeli; sadece DRIVER reddedildi  |
+
+### Final commit listesi (branch)
+
+| #   | Konu                                                                             |
+| --- | -------------------------------------------------------------------------------- |
+| 1   | feat(identity): driver invite whitelist + use cases (TEST-FIRST, 21 test)        |
+| 2   | feat(identity): driver-specific OTP endpoints + admin invites controller (6 e2e) |
+| 3   | feat(driver-mobile,customer-mobile): scaffold driver app + role-mismatch guards  |
+| 4   | docs(driver-mobile): module CLAUDE.md                                            |
+| 5   | docs: log session a4f-1a progress                                                |
+
+### Pending (A4f-1b sıradaki)
+
+- Online/offline toggle (`/dispatch/drivers/:id/online-status`)
+- Foreground location update (`expo-location` permission flow)
+- Driver push token registration (A4e-3 PushTokenService reuse)
+- NotificationContextProvider getDriverPushContext + listener routing
+- Profile screen + tab navigator
+- Driver mobile bootstrap + storage + role guard unit tests
+
+### Pending (A4f-2 driver dispatch UX)
+
+- Pending offer screen (push tap → accept/reject)
+- Active job screen (booking detail, navigate, complete)
+- Job list + history
+- Driver-side cancel flow
+
+### Pending (A4f-3 polish)
+
+- Background location updates (expo-task-manager + expo-location)
+- Lucide icons + brand SVG set
+- Jest + jest-expo + RTL component test suite
+
+### Manuel doğrulama (gerçek cihaz/Expo Go gerekli)
+
+1. Backend ayakta + admin user seed
+2. Postman: `POST /admin/driver-invites { phone: "+9055..." }`
+3. `pnpm --filter @event-fleet/driver-mobile start` → Expo Go QR scan
+4. Davet edilmemiş phone → "Bu numara henüz davet listesinde değil"
+5. Davet edilen phone → OTP istemi (mock OTP backend log'unda)
+6. OTP verify → home placeholder
+7. DB query: User.role === "DRIVER", DriverInvite.status === "ACCEPTED"
+
+### Next
+
+- **A4f-1b** driver mobile online toggle + push registration ← önerilen
+- A4f-2 driver dispatch UX (offer + active job)
+- A4f-3 polish + background location
+- A4c-payment iyzico Marketplace
+- A4g production deploy
+
 <!--
 Şablon (yeni oturum buradan başlasın):
 
