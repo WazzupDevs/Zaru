@@ -12,15 +12,23 @@ import {
   UseInterceptors,
 } from "@nestjs/common";
 
-import type { AuthTokens, AuthUserSummary } from "@event-fleet/shared-types";
+import {
+  DriverOtpRequestInputSchema,
+  type AuthTokens,
+  type AuthUserSummary,
+  type DriverOtpRequestInput,
+} from "@event-fleet/shared-types";
 
 import { CurrentUser, type AuthUser } from "../../../../common/auth/current-user.decorator";
 import { Public } from "../../../../common/auth/public.decorator";
 import { IdempotencyInterceptor } from "../../../../common/idempotency/idempotency.interceptor";
 import { ZodValidationPipe } from "../../../../common/pipes/zod-validation.pipe";
+import { AcceptDriverInviteUseCase } from "../../application/use-cases/accept-driver-invite.use-case";
+import { CheckDriverWhitelistUseCase } from "../../application/use-cases/check-driver-whitelist.use-case";
 import { RefreshTokensUseCase } from "../../application/use-cases/refresh-tokens.use-case";
 import { RequestOtpUseCase } from "../../application/use-cases/request-otp.use-case";
 import { VerifyOtpUseCase } from "../../application/use-cases/verify-otp.use-case";
+import { DriverNotInvitedError } from "../../domain/errors/driver-not-invited.error";
 import { RequestOtpDto, type RequestOtpDtoType } from "../dtos/otp-request.dto";
 import {
   RefreshTokensDto,
@@ -37,6 +45,8 @@ export class AuthController {
     private readonly requestOtp: RequestOtpUseCase,
     private readonly verifyOtp: VerifyOtpUseCase,
     private readonly refresh: RefreshTokensUseCase,
+    private readonly checkDriverWhitelist: CheckDriverWhitelistUseCase,
+    private readonly acceptDriverInvite: AcceptDriverInviteUseCase,
   ) {}
 
   @Public()
@@ -95,6 +105,71 @@ export class AuthController {
       ...(userAgent ? { userAgent } : {}),
     });
     return toAuthTokens(result);
+  }
+
+  /**
+   * Driver-specific OTP flow. The whitelist gate fires BEFORE we ask
+   * the SMS provider — uninvited phones get a clean 403 + don't burn
+   * Netgsm credits + don't reveal "is this number on the list" via
+   * an SMS receipt. Accepted phones (returning drivers) flow through
+   * the same gate (CheckDriverWhitelistUseCase returns true for both
+   * PENDING and ACCEPTED), so the OTP path is shared after the gate.
+   */
+  @Public()
+  @Post("driver/otp/request")
+  @HttpCode(HttpStatus.ACCEPTED)
+  @UseInterceptors(IdempotencyInterceptor)
+  async driverOtpRequest(
+    @Body(new ZodValidationPipe(DriverOtpRequestInputSchema)) body: DriverOtpRequestInput,
+    @Ip() ip: string,
+    @Headers("user-agent") userAgent: string | undefined,
+  ): Promise<{ requestId: string; expiresAt: string }> {
+    const whitelist = await this.checkDriverWhitelist.execute({ phone: body.phone });
+    if (!whitelist.isWhitelisted) {
+      throw new DriverNotInvitedError("phone is not on the driver whitelist");
+    }
+    const result = await this.requestOtp.execute({
+      phone: body.phone,
+      ipAddress: ip,
+      ...(userAgent ? { userAgent } : {}),
+    });
+    return {
+      requestId: result.requestId,
+      expiresAt: result.expiresAt.toISOString(),
+    };
+  }
+
+  /**
+   * Driver-specific OTP verify. After the standard verify (which may
+   * create a new User row or log in an existing one), we accept the
+   * pending DriverInvite — that promotes the User to role=DRIVER and
+   * fires the identity.DriverInviteAccepted outbox event. Idempotent
+   * for the same user (verifyOtp may retry on duplicate delivery).
+   *
+   * The accept call uses the customer-shaped VerifyOtpDto for symmetry
+   * — the body shape is identical, only the post-step differs.
+   */
+  @Public()
+  @Post("driver/otp/verify")
+  @HttpCode(HttpStatus.OK)
+  @Header("Cache-Control", "no-store")
+  @UseInterceptors(IdempotencyInterceptor)
+  async driverOtpVerify(
+    @Body(new ZodValidationPipe(VerifyOtpDto)) body: VerifyOtpDtoType,
+    @Ip() ip: string,
+    @Headers("user-agent") userAgent: string | undefined,
+  ): Promise<AuthTokens> {
+    const result = await this.verifyOtp.execute({
+      phone: body.phone,
+      requestId: body.requestId,
+      code: body.code,
+      ipAddress: ip,
+      ...(userAgent ? { userAgent } : {}),
+      ...(body.deviceId ? { deviceId: body.deviceId } : {}),
+    });
+    await this.acceptDriverInvite.execute({ phone: body.phone, userId: result.user.id });
+    // Re-fetch the user so the response carries role=DRIVER.
+    return toAuthTokens({ ...result, user: { ...result.user, role: "DRIVER" } });
   }
 
   @Get("me")
