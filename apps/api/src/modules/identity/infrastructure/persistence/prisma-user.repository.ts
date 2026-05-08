@@ -48,6 +48,19 @@ export class PrismaUserRepository implements UserRepositoryPort {
     });
   }
 
+  async updatePushToken(
+    tx: TxClient,
+    params: { userId: string; expoPushToken: string | null; at: Date },
+  ): Promise<void> {
+    await tx.user.update({
+      where: { id: params.userId },
+      data: {
+        expoPushToken: params.expoPushToken,
+        pushTokenUpdatedAt: params.at,
+      },
+    });
+  }
+
   /** This service exists only to satisfy DI; PrismaService is the real source. */
 
   private _unused(): void {

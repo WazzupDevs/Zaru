@@ -29,4 +29,16 @@ export interface UserRepositoryPort {
 
   /** Touch lastLoginAt on a returning user. */
   touchLastLogin(tx: TxClient, userId: string, loggedInAt: Date): Promise<void>;
+
+  /**
+   * Set or clear the user's Expo push token. Pass `null` to clear (e.g.,
+   * the mobile app revoked permission). `pushTokenUpdatedAt` is always
+   * stamped with `at` regardless of whether the token actually changed —
+   * so a future cleanup worker can spot tokens that haven't been refreshed
+   * recently and prune them as Expo-stale (~6 months).
+   */
+  updatePushToken(
+    tx: TxClient,
+    params: { userId: string; expoPushToken: string | null; at: Date },
+  ): Promise<void>;
 }
