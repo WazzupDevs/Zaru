@@ -46,14 +46,14 @@ export class UpdatePushTokenUseCase {
 
   async execute(input: UpdatePushTokenInput): Promise<void> {
     if (input.expoPushToken !== null && !EXPO_PUSH_TOKEN_PATTERN.test(input.expoPushToken)) {
-      throw new InvalidPushTokenError();
+      throw new InvalidPushTokenError("expoPushToken does not match Expo's token pattern");
     }
 
     const at = this.clock.now();
 
     await this.tx.run(async (tx) => {
       const user = await this.userRepo.findActiveById(tx, input.userId);
-      if (!user) throw new UserNotFoundError();
+      if (!user) throw new UserNotFoundError("user not found or soft-deleted");
 
       await this.userRepo.updatePushToken(tx, {
         userId: input.userId,

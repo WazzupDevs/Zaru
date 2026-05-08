@@ -40,9 +40,9 @@ describe("UpdatePushTokenUseCase", () => {
       updatePushToken: vi.fn(() => Promise.resolve()),
     };
     tx = {
-      run: vi.fn(<T>(fn: (txClient: unknown) => Promise<T>) => fn({})),
+      run: vi.fn(<T>(fn: (txClient: unknown) => Promise<T>) => fn({})) as TxRunnerPort["run"],
     };
-    clock = { now: () => NOW };
+    clock = { now: () => NOW, nowMs: () => NOW.getTime() };
     useCase = new UpdatePushTokenUseCase(userRepo, tx, clock);
   });
 

@@ -102,6 +102,7 @@ function buildMocks(
     findActiveById: vi.fn().mockResolvedValue(existingUser ?? buildUser()),
     createVerified: vi.fn().mockResolvedValue(buildUser()),
     touchLastLogin: vi.fn().mockResolvedValue(undefined),
+    updatePushToken: vi.fn().mockResolvedValue(undefined),
   };
 
   const refreshRepo: RefreshTokenRepositoryPort = {
