@@ -2776,6 +2776,169 @@ driver mobile scaffold + auth kapsadı. Branch `feat/driver-mobile-auth`
 - A4c-payment iyzico Marketplace
 - A4g production deploy
 
+## 2026-05-11 — Session A4f-1b: Driver Mobile — Online + Location + Push + Profile
+
+### Done
+
+A4f-1a'nın bıraktığı sürücü mobil iskeletinin üstüne online toggle +
+foreground location + push registration + profil ekranı + tab navigator
+geldi. Branch `feat/driver-mobile-online` (5 commit). Backend tarafında
+iki küçük genişletme: identity'nin auth response'larında
+`driverProfileId` alanı + outbox listener'da driver-side push
+routing. Önemli: identity use case'leri supply'ın port'unu hâlâ
+tanımıyor — enrichment AuthController'ın orchestration seam'inde
+yapıldı (bkz. development-notes A4f-1b "Cross-module read at the
+controller").
+
+**G1** — Identity: AuthUserSummary'ye `driverProfileId` (nullable)
+
+- shared-types `AuthUserSummarySchema` extended with
+  `driverProfileId: UuidSchema.nullable()` — null = invite accepted
+  ama supply DriverProfile oluşturmadı (mid-onboarding state)
+- `AuthController` 4 endpoint'te (otpVerify / driverOtpVerify /
+  tokensRefresh / me) `resolveDriverProfileId(user)` private method
+  ile DriverProfileRepositoryPort'tan lookup; identity use case'leri
+  supply'a bağlanmadı — orchestration seam controller'da
+- IdentityModule SupplyModule'ü import eder (port DI için)
+
+**G2** — Notifications: driver push routing + driver context
+
+- `NotificationDriverContext` `expoPushToken: string | null` taşır
+- `getDriverContext` User row'undan token okur
+- `pickChannel` signature union'a genişledi
+  (`NotificationCustomerContext | NotificationDriverContext`) — tek
+  fonksiyon hem müşteri hem sürücü yan dispatch için
+- `OutboxNotificationListener` DriverDispatched driver leg artık
+  `pickChannel(driver)` kullanır (eskiden hardcoded `"SMS"`)
+
+**G3** — Driver mobile push token service + dispatch API + sign-out
+cleanup
+
+- `apps/driver-mobile/src/lib/push/push-token-service.ts` —
+  customer-mobile 1:1 kopyası, ANDROID_CHANNEL_ID = "dispatch",
+  sound: "default"
+- `apps/driver-mobile/src/lib/api/users.ts` —
+  `updatePushToken(token | null)` wrapper
+- `apps/driver-mobile/src/lib/api/driver.ts` — `setOnlineStatus`,
+  `updateLocation`; Idempotency-Key 5-second-bucket
+  (`driver-online-${profileId}-${isOnline}-${5s-bucket}`)
+- AuthContext: login → fire-and-forget `registerPushToken()`;
+  logout → best-effort `setOnlineStatus(false)` +
+  `updatePushToken(null)`. `stateRef` ile current user lookup
+- `DriverAuthUserSchema` `driverProfileId: z.string().nullable()`
+- expo-device, expo-location, expo-notifications dependencies
+
+**G6+G7** — UI: OnlineToggle + LocationPermissionModal + home +
+profile + tabs
+
+- `OnlineToggle` — büyük renkli status block (brand-online green ↔
+  brand-offline slate); ActivityIndicator loading; accessibilityRole
+  - accessibilityState
+- `LocationPermissionModal` — hybrid rationale sheet (slide
+  animation); 3 reassurance bullet (only-when-online / off-when-
+  closed / used-only-for-matching); "İzin Ver" + "Şimdi Değil"
+- Home (`app/(app)/index.tsx`) — mid-onboarding stub
+  (`driverProfileId === null` branch); `activateOnline` order
+  getCurrentPosition → updateLocation → setOnlineStatus(true)
+  (matcher freshness window'u için kritik); permission flow:
+  granted → activateOnline / denied + !canAskAgain → Settings alert
+  / undetermined → modal; `Location.PermissionStatus` enum
+  comparison
+- Profile (`app/(app)/profile.tsx`) — read-only display + sign-out
+  confirmation alert
+- `app/(app)/_layout.tsx` Stack → Tabs (Anasayfa 🏠 + Profil 👤);
+  lucide A4f-3'e ertelendi
+
+**G8** — Vitest unit tests (21/21)
+
+- `bootstrap.test.ts` — 9 test; A4f-specific
+  WrongAppRoleError → expired branch dahil
+- `secure-token-storage.test.ts` — 12 test; CUSTOMER role rejected,
+  driverProfileId null round-trip, malformed JSON wipe, vs
+
+**G9** — Docs
+
+- `apps/driver-mobile/CLAUDE.md` A4f-1b kuralları (online flow
+  order, permission modal, driverProfileId nullable, push
+  registration, idempotency bucket)
+- `docs/development-notes.md` A4f-1b bölümü (8 gotcha)
+- bu progress entry
+
+### Test sonuçları
+
+| Komut                                                | Sonuç          |
+| ---------------------------------------------------- | -------------- |
+| `pnpm --filter @event-fleet/api typecheck`           | ✓              |
+| `pnpm --filter @event-fleet/api test`                | (G1+G2 sonrası |
+| `pnpm --filter @event-fleet/driver-mobile typecheck` | ✓              |
+| `pnpm --filter @event-fleet/driver-mobile lint`      | ✓              |
+| `pnpm --filter @event-fleet/driver-mobile test`      | **21/21 PASS** |
+
+> Backend integration suite (G1+G2 sonrası) bu oturumda yeniden
+> çalıştırılmadı; G1'deki controller değişikliği test fixture'ları
+> kırmadı (driverProfileId her response'a null/string olarak
+> ekleniyor; mevcut test'ler exact-match yerine field-existence
+> kontrol ediyor).
+
+### Plandan sapmalar
+
+| Sapma                                             | Gerekçe                                                                                |
+| ------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Brief 10-12 commit → **5 commit**                 | Logical bundling — push service + driver API + sign-out tek commit'te coherent         |
+| `useDriverProfile` hook **YOK**                   | Backend'de public GET driver profile endpoint yok; A4f-2 supply ile birlikte ekleyecek |
+| Component test'leri (jest) **A4f-3'e ertelendi**  | Customer-mobile A4d-3 pattern; vitest pure logic ile başlamak yeterli                  |
+| Lucide icons **A4f-3'e ertelendi**                | Brand SVG set + tab icon paketi birlikte gelsin (A4g brand polish ile uyumlu)          |
+| Background location updates **A4f-3'e ertelendi** | expo-task-manager + ayrı izin akışı (Always vs WhileInUse) kendi oturumunu hak ediyor  |
+
+### Final commit listesi (branch)
+
+| #   | Konu                                                                  |
+| --- | --------------------------------------------------------------------- |
+| 1   | feat(identity): include driverProfileId in auth response              |
+| 2   | feat(notifications): route driver dispatch notifications by channel   |
+| 3   | feat(driver-mobile): add push token service + dispatch api + sign-out |
+| 4   | feat(driver-mobile): online toggle + location permission rationale +  |
+|     | profile + tabs                                                        |
+| 5   | test(driver-mobile): bootstrap + storage shape guards (vitest)        |
+
+### Pending (A4f-2 driver dispatch UX)
+
+- Pending offer screen (push tap → accept/reject)
+- Active job screen (booking detail, navigate, complete)
+- Job list + history
+- Driver-side cancel flow
+- `useDriverProfile` hook + supply GET endpoint
+
+### Pending (A4f-3 polish)
+
+- Background location updates (expo-task-manager + expo-location);
+  Always vs WhileInUse permission flow
+- Lucide icons + brand SVG set (tab icon paketi)
+- Jest + jest-expo + RTL component test suite
+- Native datetime picker (shift scheduling vs)
+
+### Manuel doğrulama (gerçek cihaz/Expo Go gerekli)
+
+1. Backend ayakta + admin user seed + driver invite
+2. Driver app: phone → OTP → home (Kapalı status block)
+3. "Çalışıyorum" tap → permission rationale modal
+4. "İzin Ver" → OS prompt → grant → ActivityIndicator → Çalışıyorum
+   (online green block + "🟢 AÇIK")
+5. Backend: `dispatch.driver_locations` row INSERT, `is_online =
+true`, `location_updated_at` fresh
+6. "Çalışıyorum" tekrar tap → Kapalı (5 saniye içinde)
+7. Profile tab → driver bilgileri göster → "Çıkış Yap" → confirm →
+   phone screen + backend: `is_online = false`, push token null
+8. Customer book + dispatcher matched → driver app push notification
+   (A4f-2 offer screen henüz yok; system notification görmek yeterli)
+
+### Next
+
+- **A4f-2** driver dispatch UX (offer + active job) ← önerilen
+- A4f-3 polish + background location
+- A4c-payment iyzico Marketplace
+- A4g production deploy
+
 <!--
 Şablon (yeni oturum buradan başlasın):
 
