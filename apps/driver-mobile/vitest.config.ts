@@ -12,6 +12,11 @@ export default defineConfig({
     globals: true,
     include: ["src/**/*.test.ts"],
     setupFiles: ["./src/test/setup.ts"],
+    // A4f-1a ships scaffold + auth flow only — unit tests for storage,
+    // bootstrap, and the role guard land alongside the online toggle in
+    // A4f-1b. Without this flag, vitest exits 1 on "no test files
+    // found" and CI fails on the empty suite.
+    passWithNoTests: true,
   },
   resolve: {
     alias: {
