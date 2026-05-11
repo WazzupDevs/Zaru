@@ -8,6 +8,144 @@
 
 ---
 
+## 2026-05-11 — Session A4f-1b (driver mobile online + location + push + profile)
+
+### Cross-module read at the controller, not in the use case
+
+`/auth/me` and the OTP verify endpoints needed `driverProfileId` in the
+response, but the identity module's CLAUDE.md is firm that use cases
+must not import other modules' ports — that's the rule that keeps the
+modules separable when the monolith eventually splits.
+
+The seam: enrichment lives at the AuthController layer
+([apps/api/src/modules/identity/interface/controllers/auth.controller.ts](apps/api/src/modules/identity/interface/controllers/auth.controller.ts)).
+The controller already orchestrates the existing identity use cases
+(VerifyOtp, RefreshTokens, GetMe) — so calling
+`DriverProfileRepositoryPort.findByUserId` after the use case returns
+is consistent with what the controller already does at the integration
+boundary. The use cases stay pure; the controller stays the place where
+"compose a response from N modules" lives.
+
+Same pattern likely applies whenever a customer-facing endpoint needs a
+field from supply/booking/payment without crossing the domain seam.
+Don't rewrite the use case to take an injected reader — orchestrate at
+the controller.
+
+### Driver push-context routing — pickChannel union beats duplicating branches
+
+The outbox listener was hard-coded to send `SMS` on the driver-side
+DriverDispatched leg even after the customer-side learned the
+`PUSH-if-token-else-SMS` decision in A4e-3. The cleanest fix was to
+widen `pickChannel` to a union type
+(`NotificationCustomerContext | NotificationDriverContext`) instead of
+copy-pasting the branch into a sibling `pickDriverChannel`. Both
+contexts carry `expoPushToken` in the same shape, so the function reads
+`ctx.expoPushToken` once.
+
+If a third recipient kind shows up (operator? broadcast?), the union
+keeps growing — at that point extracting an `WithExpoPushToken`
+intersection or a tagged base interface is the next refactor. Not
+sooner; one branch isn't worth a type-level abstraction.
+
+### Order matters: updateLocation BEFORE setOnlineStatus(true)
+
+The dispatch matcher filters drivers by `isOnline === true` AND
+`location_updated_at > now() - 5min`. If `setOnlineStatus(true)` runs
+before `updateLocation`, the driver flips online with a stale (or
+absent) location row and the matcher's freshness filter excludes them
+— silently. The driver thinks they're getting jobs, the matcher never
+sees them.
+
+Encoded in [apps/driver-mobile/app/(app)/index.tsx](<apps/driver-mobile/app/(app)/index.tsx>)
+`activateOnline`:
+
+```
+getCurrentPosition (Balanced)
+  → updateLocation
+  → setOnlineStatus(true)
+```
+
+Reverse order would compile, type-check, and pass unit tests — only an
+end-to-end against the dispatcher catches it. Future-me: if a driver
+reports "I'm online but never get jobs", check this order first.
+
+### iOS permission is one-shot per install — rationale modal MUST come first
+
+`Location.requestForegroundPermissionsAsync()` on iOS shows the system
+prompt exactly once. After "Don't Allow", every subsequent call
+resolves immediately to denied — no dialog. Forever (until the user
+reinstalls or manually toggles in Settings).
+
+So the [apps/driver-mobile/src/components/LocationPermissionModal.tsx](apps/driver-mobile/src/components/LocationPermissionModal.tsx)
+hybrid pattern: app-level rationale modal BEFORE the OS prompt. The
+user reads "we only use it when you're online" and taps "İzin Ver" →
+THEN the OS prompt fires against a primed user. Bypassing the modal
+("just call requestPermissions on first tap") trades a 3-second
+explanation for a permanent denial on first refusal.
+
+The other branch — denied + `!canAskAgain` — Alert routes the user to
+`Linking.openSettings()` because there's no other path back.
+
+### `Location.PermissionStatus.GRANTED` enum, not raw strings
+
+`existing.status === "granted"` compiles, but ESLint's strict equality
+rules complain because the enum member type widens to a union of
+string literals. Use `Location.PermissionStatus.GRANTED` /
+`Location.PermissionStatus.DENIED`. Same pattern as the rest of the
+expo SDK enums (Notifications.PermissionStatus, etc).
+
+### `driverProfileId === null` is a real state, not corruption
+
+Driver invite accepted (User row exists, role=DRIVER) BUT the supply
+module's CreateDriverProfileUseCase hasn't run yet (admin still needs
+to enter TCKN/IBAN/birthDate). The auth response carries
+`driverProfileId: null` for these users.
+
+Three places need to treat null as a first-class value, not "log out":
+
+1. `DriverAuthUserSchema.driverProfileId: z.string().nullable()` — Zod
+   parse must accept null.
+2. Storage shape guard — does NOT validate this field, so it round-
+   trips automatically. Tested explicitly in
+   [apps/driver-mobile/src/lib/storage/secure-token-storage.test.ts](apps/driver-mobile/src/lib/storage/secure-token-storage.test.ts).
+3. Home screen — early-return with an "Operasyon ekibi haber verecek"
+   stub instead of letting the user tap online and 404.
+
+The non-null assertion (`driverProfileId as string`) inside callbacks
+that fire AFTER the early-return looks safe to TS but ESLint's no-non-
+null-assertion rule rejects it. Capture once: `const profileId: string
+= driverProfileId;` after the null-check, then close over `profileId`.
+
+### `stateRef` in AuthContext for logout-time current-user lookup
+
+Logout's "best-effort cleanup" needs `state.user.driverProfileId` to
+flip the driver offline + null the push token. But the `logout`
+callback is created at provider mount and closes over the INITIAL
+state. By the time it runs, `state.status` has been
+`"authenticated"` for hours.
+
+A `stateRef` (`useRef`, updated in a `useEffect` whose dep is `state`)
+gives logout the live state without making it a state-dependent
+callback. Standard pattern; copy from
+[apps/driver-mobile/src/contexts/auth-context.tsx](apps/driver-mobile/src/contexts/auth-context.tsx)
+when the customer-mobile equivalent eventually needs the same.
+
+### Five-second-bucket Idempotency-Key on online toggle
+
+`driver-online-${driverProfileId}-${isOnline}-${5s-bucket}` — bucket
+keeps a fast double-tap deduped on the server (one online flip, one
+audit row), but a deliberate retry 6 seconds later goes through with
+a fresh key. Without the bucket, a driver who taps offline → online
+back-to-back the next minute would hit the dedup table and the
+toggle would silently no-op.
+
+Same pattern as the booking-cancel key in customer-mobile. Document
+the bucket size in the API client, not at the call site — call sites
+will be tempted to "make it 60 seconds" without realising the dedup
+window IS the bucket.
+
+---
+
 ## 2026-05-06 — Session A4d-2 (mobile booking flow)
 
 ### Cached-user pattern needs storage version bump
