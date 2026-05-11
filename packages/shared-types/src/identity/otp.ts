@@ -42,8 +42,15 @@ export const AuthUserSummarySchema = z.object({
    * mid-onboarding before supply created the profile). The driver app
    * uses this to call /dispatch/drivers/:id/* endpoints; null means
    * "complete onboarding first".
+   *
+   * Optional in addition to nullable: the customer-facing OTP verify
+   * response was emitting auth payloads without the field at all
+   * (controllers added it only on the driver-facing paths in A4f-1b's
+   * first cut). Marking optional avoids a breaking parse on the
+   * customer mobile bundle while the controller catches up — both
+   * mobile clients already treat undefined and null as "no profile".
    */
-  driverProfileId: UuidSchema.nullable(),
+  driverProfileId: UuidSchema.nullable().optional(),
 });
 export type AuthUserSummary = z.infer<typeof AuthUserSummarySchema>;
 
