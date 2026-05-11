@@ -1,6 +1,7 @@
 import { forwardRef, Module, type Type } from "@nestjs/common";
 
 import { NotificationsModule } from "../notifications/notifications.module";
+import { SupplyModule } from "../supply/supply.module";
 import { DRIVER_INVITE_REPOSITORY_PORT } from "./application/ports/driver-invite.repository.port";
 import { JWT_TOKEN_SERVICE_PORT } from "./application/ports/jwt-token.service.port";
 import { OTP_REQUEST_REPOSITORY_PORT } from "./application/ports/otp-request.repository.port";
@@ -37,7 +38,11 @@ const TestOtpCacheClass: Type<TestOtpCachePort> =
 const isProduction = process.env.NODE_ENV === "production";
 
 @Module({
-  imports: [forwardRef(() => NotificationsModule)],
+  // SupplyModule provides DRIVER_PROFILE_REPOSITORY_PORT — the
+  // AuthController enriches its responses with driverProfileId for
+  // DRIVER-role users (A4f-1b). Identity's USE CASES still don't
+  // depend on supply; only the controller layer cross-reads.
+  imports: [forwardRef(() => NotificationsModule), SupplyModule],
   controllers: [
     AuthController,
     UsersController,

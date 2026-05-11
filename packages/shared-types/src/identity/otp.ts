@@ -36,6 +36,14 @@ export const AuthUserSummarySchema = z.object({
   phoneE164: PhoneE164Schema,
   role: UserRoleSchema,
   displayName: z.string().nullable(),
+  /**
+   * A4f-1b — set when role === "DRIVER" AND a DriverProfile row exists
+   * for the user. Null otherwise (CUSTOMER, ADMIN, SUPPORT, or a driver
+   * mid-onboarding before supply created the profile). The driver app
+   * uses this to call /dispatch/drivers/:id/* endpoints; null means
+   * "complete onboarding first".
+   */
+  driverProfileId: UuidSchema.nullable(),
 });
 export type AuthUserSummary = z.infer<typeof AuthUserSummarySchema>;
 

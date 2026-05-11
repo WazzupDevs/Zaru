@@ -10,6 +10,7 @@ import {
   Post,
   Req,
   UseInterceptors,
+  Inject,
 } from "@nestjs/common";
 
 import {
@@ -22,7 +23,12 @@ import {
 import { CurrentUser, type AuthUser } from "../../../../common/auth/current-user.decorator";
 import { Public } from "../../../../common/auth/public.decorator";
 import { IdempotencyInterceptor } from "../../../../common/idempotency/idempotency.interceptor";
+import { TX_RUNNER_PORT, type TxRunnerPort } from "../../../../common/persistence/tx-runner.port";
 import { ZodValidationPipe } from "../../../../common/pipes/zod-validation.pipe";
+import {
+  DRIVER_PROFILE_REPOSITORY_PORT,
+  type DriverProfileRepositoryPort,
+} from "../../../supply/application/ports/driver-profile.repository.port";
 import { AcceptDriverInviteUseCase } from "../../application/use-cases/accept-driver-invite.use-case";
 import { CheckDriverWhitelistUseCase } from "../../application/use-cases/check-driver-whitelist.use-case";
 import { RefreshTokensUseCase } from "../../application/use-cases/refresh-tokens.use-case";
@@ -47,7 +53,32 @@ export class AuthController {
     private readonly refresh: RefreshTokensUseCase,
     private readonly checkDriverWhitelist: CheckDriverWhitelistUseCase,
     private readonly acceptDriverInvite: AcceptDriverInviteUseCase,
+    // A4f-1b — driverProfileId enrichment for driver app responses.
+    // Identity use cases stay independent of supply (CLAUDE.md
+    // discipline); only the controller layer cross-reads, since
+    // controllers are the orchestration seam and `/auth/me` +
+    // `/auth/otp/verify` already aggregate cross-module fields.
+    @Inject(DRIVER_PROFILE_REPOSITORY_PORT)
+    private readonly driverProfileRepo: DriverProfileRepositoryPort,
+    @Inject(TX_RUNNER_PORT) private readonly tx: TxRunnerPort,
   ) {}
+
+  /**
+   * Looks up the driver profile id only when the user is in DRIVER role.
+   * Returns null for everyone else. One DB hit per call — kept here
+   * (not a use case) because the lookup is purely a presentation
+   * concern.
+   */
+  private async resolveDriverProfileId(user: {
+    id: string;
+    role: AuthUserSummary["role"];
+  }): Promise<string | null> {
+    if (user.role !== "DRIVER") return null;
+    const profile = await this.tx.run((tx) =>
+      this.driverProfileRepo.findActiveByUserId(tx, user.id),
+    );
+    return profile ? profile.id : null;
+  }
 
   @Public()
   @Post("otp/request")
@@ -87,7 +118,8 @@ export class AuthController {
       ...(userAgent ? { userAgent } : {}),
       ...(body.deviceId ? { deviceId: body.deviceId } : {}),
     });
-    return toAuthTokens(result);
+    const driverProfileId = await this.resolveDriverProfileId(result.user);
+    return toAuthTokens(result, driverProfileId);
   }
 
   @Public()
@@ -104,7 +136,8 @@ export class AuthController {
       ipAddress: ip,
       ...(userAgent ? { userAgent } : {}),
     });
-    return toAuthTokens(result);
+    const driverProfileId = await this.resolveDriverProfileId(result.user);
+    return toAuthTokens(result, driverProfileId);
   }
 
   /**
@@ -168,19 +201,30 @@ export class AuthController {
       ...(body.deviceId ? { deviceId: body.deviceId } : {}),
     });
     await this.acceptDriverInvite.execute({ phone: body.phone, userId: result.user.id });
-    // Re-fetch the user so the response carries role=DRIVER.
-    return toAuthTokens({ ...result, user: { ...result.user, role: "DRIVER" } });
+    // Driver profile may not exist yet (supply onboarding lives downstream).
+    // Look up here so the response carries the id when it does — driver
+    // mobile uses null to show "complete onboarding" UI.
+    const driverProfileId = await this.resolveDriverProfileId({
+      id: result.user.id,
+      role: "DRIVER",
+    });
+    return toAuthTokens({ ...result, user: { ...result.user, role: "DRIVER" } }, driverProfileId);
   }
 
   @Get("me")
   @Header("Cache-Control", "no-store")
-  me(@CurrentUser() user: AuthUser, @Req() req: Request): AuthUserSummary {
+  async me(@CurrentUser() user: AuthUser, @Req() req: Request): Promise<AuthUserSummary> {
     void req;
+    const driverProfileId = await this.resolveDriverProfileId({
+      id: user.id,
+      role: user.role,
+    });
     return {
       id: user.id,
       phoneE164: user.phoneE164,
       role: user.role,
       displayName: user.displayName,
+      driverProfileId,
     };
   }
 }
@@ -198,7 +242,7 @@ interface UseCaseResult {
   };
 }
 
-function toAuthTokens(r: UseCaseResult): AuthTokens {
+function toAuthTokens(r: UseCaseResult, driverProfileId: string | null): AuthTokens {
   return {
     accessToken: r.accessToken,
     refreshToken: r.refreshToken,
@@ -209,6 +253,7 @@ function toAuthTokens(r: UseCaseResult): AuthTokens {
       phoneE164: r.user.phoneE164,
       role: r.user.role,
       displayName: r.user.displayName,
+      driverProfileId,
     },
   };
 }
