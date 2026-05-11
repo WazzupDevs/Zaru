@@ -6,6 +6,7 @@ import { formatTrCurrency } from "../services/format.helpers";
 import {
   NotificationContextProvider,
   type NotificationCustomerContext,
+  type NotificationDriverContext,
 } from "../services/notification-context.provider";
 import { QueueNotificationUseCase } from "../use-cases/queue-notification.use-case";
 
@@ -14,14 +15,19 @@ import type { NotificationChannel } from "../../domain/notification-types";
 /**
  * Channel routing — token present → PUSH, otherwise SMS fallback.
  * Returning channel + token in one shape lets call sites stay flat.
- * ADR 0021 amended in A4e-3.
+ * ADR 0021 amended in A4e-3 (customer side) + A4f-1b (driver side).
+ *
+ * The single shape accepts either context type because both expose
+ * `expoPushToken` with identical semantics — keeping a union here means
+ * the four event handlers (BookingCreated/Cancelled/Expired,
+ * DriverDispatched) all use the same routing helper.
  */
-function pickChannel(customer: NotificationCustomerContext): {
+function pickChannel(context: NotificationCustomerContext | NotificationDriverContext): {
   channel: NotificationChannel;
   recipientPushToken: string | null;
 } {
-  if (customer.expoPushToken !== null && customer.expoPushToken.length > 0) {
-    return { channel: "PUSH", recipientPushToken: customer.expoPushToken };
+  if (context.expoPushToken !== null && context.expoPushToken.length > 0) {
+    return { channel: "PUSH", recipientPushToken: context.expoPushToken };
   }
   return { channel: "SMS", recipientPushToken: null };
 }
@@ -192,12 +198,17 @@ export class OutboxNotificationListener {
     const customer = await this.contextProvider.getCustomerContext(booking.customerId);
     if (!customer) return;
 
-    // Driver SMS — driver mobile app + push registration land in A4f.
+    // Driver — A4f-1b wires push registration in the driver mobile app,
+    // so this side now picks PUSH when the driver has a token (same
+    // helper as the customer path; SMS stays the fallback for drivers
+    // who declined permission or are on a simulator).
+    const driverRoute = pickChannel(driver);
     await this.queueNotification.execute({
-      channel: "SMS",
+      channel: driverRoute.channel,
       kind: "NEW_BOOKING_OFFER",
       recipientUserId: driver.userId,
       recipientPhone: driver.phoneE164,
+      recipientPushToken: driverRoute.recipientPushToken,
       templateKey: "dispatch.new_offer",
       locale: "tr",
       variables: {

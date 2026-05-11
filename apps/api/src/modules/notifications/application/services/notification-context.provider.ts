@@ -32,6 +32,9 @@ export interface NotificationDriverContext {
   userId: string;
   displayName: string | null;
   phoneE164: string;
+  /** A4f-1b — same channel-routing semantic as the customer context.
+   * Listener picks PUSH when present, SMS otherwise. */
+  expoPushToken: string | null;
   /** "Renault Symbol - ivory" — derived from first active vehicle. */
   vehicleInfo: string;
   plateNumber: string;
@@ -113,6 +116,7 @@ export class NotificationContextProvider {
         userId: user.id,
         displayName: user.displayName,
         phoneE164: user.phoneE164,
+        expoPushToken: user.expoPushToken,
         vehicleInfo: vehicle
           ? `${vehicle.brand} ${vehicle.model} - ${vehicle.color}`
           : "Belirtilmemiş",
