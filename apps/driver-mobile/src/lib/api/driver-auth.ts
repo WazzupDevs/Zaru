@@ -21,6 +21,13 @@ export const DriverAuthUserSchema = z.object({
   phoneE164: z.string(),
   role: z.literal("DRIVER"),
   displayName: z.string().nullable(),
+  /**
+   * Set when the supply module has provisioned a DriverProfile for the
+   * user. Null while the driver is mid-onboarding (post-invite, pre-
+   * profile-create) — the home screen routes them through onboarding
+   * in that case rather than letting them tap online and 404.
+   */
+  driverProfileId: z.string().nullable(),
 });
 export type AuthUserSummary = z.infer<typeof DriverAuthUserSchema>;
 

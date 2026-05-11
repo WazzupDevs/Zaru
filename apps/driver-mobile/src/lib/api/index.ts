@@ -1,5 +1,7 @@
 import { createApiClient, type ApiClient } from "./client";
+import { createDriverApi } from "./driver";
 import { createDriverAuthApi } from "./driver-auth";
+import { createUsersApi } from "./users";
 import { clearSession, getTokens, setTokens } from "../storage/secure-token-storage";
 
 /**
@@ -14,4 +16,6 @@ const apiClient: ApiClient = createApiClient({
 });
 
 export const driverAuthApi = createDriverAuthApi(apiClient);
+export const usersApi = createUsersApi(apiClient);
+export const driverApi = createDriverApi(apiClient);
 export { apiClient };

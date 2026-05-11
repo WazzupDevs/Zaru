@@ -8,15 +8,37 @@ import {
   type ReactNode,
 } from "react";
 
-import { driverAuthApi } from "../lib/api";
+import { driverApi, driverAuthApi, usersApi } from "../lib/api";
 import { type AuthUserSummary, type DriverAuthApi } from "../lib/api/driver-auth";
 import { bootstrapAuth, validateSession } from "../lib/auth/bootstrap";
+import { Logger } from "../lib/logger";
+import { PushTokenService } from "../lib/push/push-token-service";
 import {
   clearSession,
   getSession,
   setSession,
   type StoredTokens,
 } from "../lib/storage/secure-token-storage";
+
+/**
+ * Best-effort push registration after a successful OTP verify. Mirrors
+ * the customer-mobile A4e-3 flow — a NetworkError, denied permission,
+ * or placeholder projectId all return null silently; anything else
+ * throws and we swallow + log so the auth flow never breaks because of
+ * push.
+ */
+async function registerPushToken(): Promise<void> {
+  try {
+    const token = await PushTokenService.requestPermissionAndGetToken();
+    if (!token) return; // Soft-null path — service already logged the reason.
+    await usersApi.updatePushToken(token);
+    Logger.info("driver_push_registration_success");
+  } catch (err) {
+    Logger.warn("driver_push_registration_failed", {
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
 
 /**
  * Driver-app auth state machine. Same shape as customer-mobile's
@@ -90,10 +112,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(async (tokens: StoredTokens, user: AuthUserSummary) => {
     await setSession({ tokens, user });
     setState({ status: "authenticated", user, verified: true });
-    // A4f-1b wires push registration here (mirrors A4e-3 customer flow).
+    // Push registration runs fire-and-forget — auth must never break
+    // because permission was denied or the placeholder projectId is
+    // still in app.config.ts.
+    void registerPushToken();
   }, []);
 
   const logout = useCallback(async () => {
+    // Best-effort sign-out cleanup — flip the driver offline so the
+    // dispatch matcher stops considering them, AND clear the server-
+    // side push token so we don't fire dispatch notifications at a
+    // signed-out client. Both fail-silent: the local session is
+    // already gone client-side once we hit setState below.
+    const currentUser = stateRef.current.status === "authenticated" ? stateRef.current.user : null;
+    if (currentUser?.driverProfileId) {
+      try {
+        await driverApi.setOnlineStatus(currentUser.driverProfileId, false);
+      } catch (err) {
+        Logger.warn("driver_offline_on_signout_failed", {
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    try {
+      await usersApi.updatePushToken(null);
+    } catch (err) {
+      Logger.warn("push_token_clear_failed", {
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
     await clearSession();
     setState({ status: "unauthenticated" });
   }, []);
