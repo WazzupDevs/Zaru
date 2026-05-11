@@ -46,3 +46,16 @@ export class AuthExpiredError extends Error {
     this.name = "AuthExpiredError";
   }
 }
+
+/**
+ * Role-mismatch guard (A4f-1). Customer app rejects DRIVER role logins
+ * here so the UI can show a friendly "wrong app" message instead of
+ * surfacing as a generic shape error. The driver app has its own copy
+ * of this error class with the same name + symmetric semantic.
+ */
+export class WrongAppRoleError extends Error {
+  constructor() {
+    super("Bu hesap sürücü hesabı — sürücü uygulamasını kullanın");
+    this.name = "WrongAppRoleError";
+  }
+}

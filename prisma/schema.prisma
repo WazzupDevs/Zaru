@@ -53,9 +53,57 @@ model User {
   driverProfile     DriverProfile?
   bookings          Booking[]      @relation("BookingCustomer")
   cancelledBookings Booking[]      @relation("BookingCancelledBy")
+  acceptedInvite    DriverInvite?  @relation("AcceptedDriverInvite")
+  invitedDrivers    DriverInvite[] @relation("InvitedByAdmin")
 
   @@index([phoneE164])
   @@map("users")
+}
+
+// =====================================================================
+// Driver invitations (A4f-1) — closed-beta whitelist gating.
+// Admin invites a TR mobile by phone; the driver app's auth flow only
+// proceeds for phones with a PENDING invite. On successful OTP verify
+// the invite goes ACCEPTED, the User row's role flips to DRIVER, and
+// a DriverProfile auto-provisions in APPROVED status.
+//
+// Phone is stored both clear (for admin display) and hashed (for the
+// listener's lookup; ADR 0016 hash discipline). The hash makes the
+// whitelist check resistant to a leaked DB dump revealing the invite
+// list as a phone-number harvest.
+// =====================================================================
+
+enum DriverInviteStatus {
+  PENDING // Invited, driver hasn't logged in yet.
+  ACCEPTED // Driver completed OTP verify; User + DriverProfile provisioned.
+  REVOKED // Admin pulled the invite. Driver can no longer log in via this row.
+}
+
+model DriverInvite {
+  id            String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  phoneE164     String @map("phone_e164")
+  phoneE164Hash String @map("phone_e164_hash")
+
+  status         DriverInviteStatus @default(PENDING)
+  invitedAt      DateTime           @default(now()) @map("invited_at")
+  acceptedAt     DateTime?          @map("accepted_at")
+  acceptedUserId String?            @unique @map("accepted_user_id") @db.Uuid
+
+  invitedByAdminId String  @map("invited_by_admin_id") @db.Uuid
+  notes            String?
+
+  deletedAt DateTime? @map("deleted_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  acceptedUser   User? @relation("AcceptedDriverInvite", fields: [acceptedUserId], references: [id])
+  invitedByAdmin User  @relation("InvitedByAdmin", fields: [invitedByAdminId], references: [id])
+
+  // Whitelist lookup hot path — hash + status filter.
+  @@index([phoneE164Hash, status])
+  // Admin list sort.
+  @@index([status, invitedAt])
+  @@map("driver_invites")
 }
 
 model RefreshToken {
