@@ -453,6 +453,7 @@ model DriverProfile {
   documents      Document[]
   availabilities VehicleAvailability[]
   bookings       Booking[]
+  driverOffers   DriverOffer[]
 
   @@index([status])
   @@index([isOnline, lastLocationUpdate])
@@ -752,10 +753,94 @@ model Booking {
   priceQuote      PriceQuote      @relation(fields: [priceQuoteId], references: [id])
   vehicleType     VehicleType     @relation(fields: [vehicleTypeId], references: [id])
   category        ServiceCategory @relation(fields: [categoryId], references: [id])
+  driverOffers    DriverOffer[]
 
   @@index([customerId, status])
   @@index([status, eventStartAt])
   @@index([driverId, status])
   @@index([eventStartAt])
   @@map("bookings")
+}
+
+// A4f-2 — driver offer lifecycle. The dispatch matcher creates a
+// PENDING offer instead of immediately assigning the driver; the
+// Booking stays CONFIRMED until the driver accepts. Five active
+// statuses (ACCEPTED → ON_THE_WAY → ARRIVED → IN_PROGRESS →
+// COMPLETED) cover the driver-side lifecycle; PENDING/EXPIRED/
+// REJECTED/CANCELLED are terminal failures or pre-accept states.
+//
+// A booking has many offers over time (an EXPIRED/REJECTED offer is
+// followed by a new PENDING one for the next candidate). The (booking,
+// driver) unique constraint prevents the same driver from receiving
+// two offers for the same booking — cooldown is enforced by the
+// dispatch worker's excludeDriverIds filter.
+model DriverOffer {
+  id              String @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  bookingId       String @map("booking_id") @db.Uuid
+  driverProfileId String @map("driver_profile_id") @db.Uuid
+
+  status    DriverOfferStatus @default(PENDING)
+  // 5-minute window from creation. Worker auto-expires PENDING rows
+  // whose expiresAt has passed.
+  expiresAt DateTime          @map("expires_at")
+
+  // Lifecycle audit timestamps. Each transition writes one timestamp;
+  // the latest non-null one is the current state's enter time.
+  acceptedAt   DateTime? @map("accepted_at")
+  rejectedAt   DateTime? @map("rejected_at")
+  expiredAt    DateTime? @map("expired_at")
+  onTheWayAt   DateTime? @map("on_the_way_at")
+  arrivedAt    DateTime? @map("arrived_at")
+  inProgressAt DateTime? @map("in_progress_at")
+  completedAt  DateTime? @map("completed_at")
+  cancelledAt  DateTime? @map("cancelled_at")
+
+  // Reject context. Reason enum drives analytics; note is freeform
+  // for OTHER (or richer detail on the structured reasons).
+  rejectReason DriverRejectReason? @map("reject_reason")
+  rejectNote   String?             @map("reject_note")
+
+  // Scoring snapshot from the matcher run that produced this offer.
+  // Stored for analytics ("did the highest-scored driver accept?").
+  matchedDistanceKm Decimal? @map("matched_distance_km") @db.Decimal(8, 3)
+  matchedScore      Decimal? @map("matched_score") @db.Decimal(5, 4)
+
+  version   Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  booking Booking       @relation(fields: [bookingId], references: [id])
+  driver  DriverProfile @relation(fields: [driverProfileId], references: [id])
+
+  // A driver only sees one offer per booking even on retry — when the
+  // worker re-attempts after a previous EXPIRED/REJECTED, it explicitly
+  // excludes drivers who already saw this booking.
+  @@unique([bookingId, driverProfileId])
+  // Driver's active offer (UI listHistory + single-active guard).
+  @@index([driverProfileId, status])
+  // Worker's auto-expire sweep (PENDING + expiresAt < now).
+  @@index([status, expiresAt])
+  // Customer-facing booking detail enrichment (find active offer for
+  // a booking).
+  @@index([bookingId, status])
+  @@map("driver_offers")
+}
+
+enum DriverOfferStatus {
+  PENDING // driver davet edildi, bekleniyor
+  ACCEPTED // driver kabul etti, henüz yola çıkmadı
+  ON_THE_WAY // pickup'a yola çıktı
+  ARRIVED // pickup'a vardı
+  IN_PROGRESS // etkinlikte
+  COMPLETED // tamamlandı
+  REJECTED // driver reddetti
+  EXPIRED // 5 dakika doldu, otomatik
+  CANCELLED // booking iptal edildi (customer cancel)
+}
+
+enum DriverRejectReason {
+  TOO_FAR
+  TIME_CONFLICT
+  VEHICLE_UNAVAILABLE
+  OTHER
 }
