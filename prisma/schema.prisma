@@ -490,6 +490,7 @@ model Vehicle {
   vehicleType     VehicleType           @relation(fields: [vehicleTypeId], references: [id])
   availabilities  VehicleAvailability[]
   bookings        Booking[]
+  driverOffers    DriverOffer[]
 
   @@index([driverProfileId])
   @@index([status])
@@ -778,6 +779,10 @@ model DriverOffer {
   id              String @id @default(dbgenerated("uuidv7()")) @db.Uuid
   bookingId       String @map("booking_id") @db.Uuid
   driverProfileId String @map("driver_profile_id") @db.Uuid
+  // Vehicle the matcher selected at offer time. Frozen here so accept
+  // doesn't have to re-resolve (a multi-vehicle driver could otherwise
+  // be ambiguous, and re-resolving races against vehicle status flips).
+  vehicleId       String @map("vehicle_id") @db.Uuid
 
   status    DriverOfferStatus @default(PENDING)
   // 5-minute window from creation. Worker auto-expires PENDING rows
@@ -811,6 +816,7 @@ model DriverOffer {
 
   booking Booking       @relation(fields: [bookingId], references: [id])
   driver  DriverProfile @relation(fields: [driverProfileId], references: [id])
+  vehicle Vehicle       @relation(fields: [vehicleId], references: [id])
 
   // A driver only sees one offer per booking even on retry — when the
   // worker re-attempts after a previous EXPIRED/REJECTED, it explicitly

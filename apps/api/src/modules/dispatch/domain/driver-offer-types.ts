@@ -24,6 +24,8 @@ export interface DriverOfferEntity {
   id: string;
   bookingId: string;
   driverProfileId: string;
+  /** Vehicle the matcher selected at offer time; frozen in the row. */
+  vehicleId: string;
   status: DriverOfferStatus;
 
   expiresAt: Date;

@@ -31,6 +31,9 @@ CREATE TABLE "driver_offers" (
     "id" UUID NOT NULL DEFAULT uuidv7(),
     "booking_id" UUID NOT NULL,
     "driver_profile_id" UUID NOT NULL,
+    -- Frozen at offer creation (matcher picked this driver-vehicle
+    -- pair); accept reads it directly instead of re-resolving.
+    "vehicle_id" UUID NOT NULL,
 
     "status" "DriverOfferStatus" NOT NULL DEFAULT 'PENDING',
     "expires_at" TIMESTAMP(3) NOT NULL,
@@ -85,4 +88,9 @@ ALTER TABLE "driver_offers"
 ALTER TABLE "driver_offers"
     ADD CONSTRAINT "driver_offers_driver_profile_id_fkey"
     FOREIGN KEY ("driver_profile_id") REFERENCES "driver_profiles"("id")
+    ON DELETE RESTRICT ON UPDATE CASCADE;
+
+ALTER TABLE "driver_offers"
+    ADD CONSTRAINT "driver_offers_vehicle_id_fkey"
+    FOREIGN KEY ("vehicle_id") REFERENCES "vehicles"("id")
     ON DELETE RESTRICT ON UPDATE CASCADE;
