@@ -2776,6 +2776,145 @@ driver mobile scaffold + auth kapsadı. Branch `feat/driver-mobile-auth`
 - A4c-payment iyzico Marketplace
 - A4g production deploy
 
+## 2026-05-13 — Session A4f-2a: Driver Dispatch UX — Backend Foundation
+
+### Done
+
+A4f-2 brief 18-22 commit'lik tek-PR olarak gelmişti. Mimari kararlar
+netleştikten sonra bilinçli bir scope-split yaptık: A4f-2a (bu
+oturum) backend foundation; A4f-2b (sonraki oturum) use case'lerin
+tamamı + worker refactor + endpoints + notifications + iki mobile.
+Branch `feat/driver-dispatch-ux` (4 commit).
+
+**G1.1** — DriverOffer aggregate
+
+- Prisma model: `DriverOffer` 1:N child of Booking, FK'lar
+  `bookings + driver_profiles + vehicles`
+- `vehicleId` row'a dondurulur (matcher offer yaratırken seçer;
+  accept'te yeniden resolve etmez — multi-vehicle driver race
+  koruma)
+- Status enum 9 değer (PENDING + 4 active + COMPLETED + 3 failure)
+- RejectReason enum 4 değer (TOO_FAR / TIME_CONFLICT /
+  VEHICLE_UNAVAILABLE / OTHER)
+- 3 partial index: `(driver, status)` driver hot path,
+  `(status, expiresAt)` worker sweep, `(booking, status)` customer
+  enrichment
+- Migration `20260513120000_add_driver_offers` el yazımı (postgis
+  projesi, prisma migrate dev interaktif → hangs)
+
+**G1.2** — Domain types + state machine
+
+- `DriverOfferEntity` Prisma row 1:1 mirror (Decimal money fields
+  Prisma type olarak kalır, mapper string'e çevirir)
+- `DriverOfferStateMachine` hand-rolled FSM (ADR 0019 pattern)
+- 12 valid + 19 invalid transition pin'lendi (52 test)
+- Üç deliberate kısıt:
+  - PENDING → COMPLETED skip yasak
+  - Driver-side reject sadece PENDING'den (post-accept driver no-show
+    ayrı incident flow)
+  - CANCELLED her active status'tan ulaşılabilir (customer cancel
+    cascade)
+- 6 yeni domain error + 7 yeni dispatch event tipi
+
+**G2.1** — Accept use case (TEST-FIRST)
+
+- `DriverOfferRepositoryPort` 8 method (create + findById +
+  transitionStatus + findActiveByDriverId + findActiveByBookingId +
+  findPriorDriverIdsForBooking + findExpiredPending + list)
+- `PrismaDriverOfferRepository` adapter
+- `AcceptDriverOfferUseCase` — A4f-2 mimari seam'i:
+  - Idempotent re-accept (status===ACCEPTED erken return)
+  - 5-dakika expiry **in-tx** (PENDING → EXPIRED + outbox event +
+    OfferExpiredError → 410)
+  - Single-active-offer guard
+  - PENDING → ACCEPTED transition (optimistic lock)
+  - Booking CONFIRMED → DRIVER_ASSIGNED + BOOKED availability
+    INSERT (eski AssignDriverToBooking'in işi)
+  - DriverOfferAccepted outbox event
+- Spec: 8 senaryo (happy path + not-found + forbidden + idempotent +
+  expired + terminal + active-elsewhere + concurrent-modification)
+
+**G commission** — Driver commission rate default %15 → %20
+
+- Schema default flip + migration
+  `20260513130000_bump_commission_rate_default`
+- Mevcut row'lar 0.15'te kalır (pricing snapshot test'leri kalibre)
+- A4f-2b'de `driverEarnings = totalAmount × (1 - driver.commissionRate)`
+
+**G docs** — Bu progress entry + development-notes A4f-2a bölümü
+(4 karar gerekçesi: aggregate ayrımı, vehicleId frozen, expiry
+defense-in-depth, idempotent pattern, commission default).
+
+### Test sonuçları
+
+| Komut                                                                   | Sonuç          |
+| ----------------------------------------------------------------------- | -------------- |
+| `pnpm --filter @event-fleet/api typecheck`                              | ✓              |
+| `pnpm --filter @event-fleet/shared-types build`                         | ✓              |
+| `vitest run dispatch/domain/driver-offer-state-machine.spec.ts`         | **52/52 PASS** |
+| `vitest run dispatch/application/use-cases/accept-driver-offer.spec.ts` | **8/8 PASS**   |
+
+> Full integration suite (87 test) bu session'da koşulmadı — lokal
+> Docker Desktop kapalı. CI yeşillenince A4f-2a merge edilebilir.
+
+### Plandan sapmalar
+
+| Sapma                                                              | Gerekçe                                                                        |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| Brief 18-22 commit → **4 commit (A4f-2a)**                         | Bilinçli scope-split, A4d pattern. A4f-2b kalan 14-18 commit'i alır            |
+| `PLATFORM_COMMISSION_PCT` env → **`driver.commissionRate` column** | Per-driver override DB'de zaten var, env'le globalleştirmek esnekliği kaybeder |
+| `DriverOffer.vehicleId` brief'te yoktu → eklendi                   | Multi-vehicle driver + accept-time race koruma                                 |
+| Booking state machine **değişmiyor** (sadece offer ayrı aggregate) | Müşteri "atandı → iptal → atandı" titremesi yaşamaz, ADR 0019 stabil           |
+
+### Final commit listesi (branch, sırayla)
+
+| #   | Konu                                                           |
+| --- | -------------------------------------------------------------- |
+| 1   | feat(db): add driver offer aggregate with 5-status lifecycle   |
+| 2   | feat(dispatch): add driver offer domain types + state machine  |
+| 3   | feat(dispatch): driver offer repository port + accept use case |
+| 4   | feat(db): bump driver commission rate default to 20%           |
+| 5   | docs: log session a4f-2a progress + decisions                  |
+
+### Pending (A4f-2b sıradaki, yeni session)
+
+- **G2.2** RejectDriverOfferUseCase (reason + cooldown)
+- **G2.3** UpdateDriverOfferStatusUseCase (ON_THE_WAY → ARRIVED →
+  IN_PROGRESS → COMPLETED, 4 outbox event)
+- **G2.4** Get/List queries + driverEarnings hesabı
+  (`driver.commissionRate` kullanır)
+- **G3.1-3** Refactor `AssignDriverToBooking` → `CreateDriverOfferUseCase`,
+  worker auto-expire PENDING sweep, reject re-trigger
+  (`excludeDriverIds` ile)
+- **G3.4** Integration tests (Testcontainers, offer lifecycle)
+- **G4** shared-types driver-offer schemas + `DispatchOffersController` +
+  `DriverStatusController` + endpoint integration tests
+- **G5** Notification event handlers (4 yeni chain: DriverAccepted,
+  DriverOnTheWay, DriverArrived, BookingCompleted)
+- **G6** Driver mobile deep linking (`eventfleetdriver://`) + push tap
+- **G7** Driver mobile offer screen + countdown + reject modal
+- **G8** Driver mobile active job + status update buttons + history
+- **G9** Customer mobile driver lifecycle UI (BookingCard badges +
+  BookingDetail sections)
+- Docs (driver mobile CLAUDE.md, customer mobile CLAUDE.md,
+  development-notes, progress.md, smoke script extension)
+
+### Manuel doğrulama (A4f-2a — sonraki PR review içinde)
+
+1. Migration `20260513120000_add_driver_offers` deploy ✓
+2. Migration `20260513130000_bump_commission_rate_default` deploy ✓
+3. `\d driver_offers` 9 enum kolonu + 3 partial index gösterir
+4. `\d driver_profiles` `commission_rate DEFAULT 0.20` gösterir
+5. New driver insert (default değerle) → `commissionRate = 0.20`
+6. Existing seeded driver → `commissionRate = 0.15` (değişmedi)
+
+### Next
+
+- **A4f-2b** kalan iş (yeni session, fresh context) ← önerilen
+- A4f-3 polish (background location + Lucide migration + jest driver-mobile)
+- A4c-payment iyzico Marketplace
+- A4g production deploy
+
 <!--
 Şablon (yeni oturum buradan başlasın):
 

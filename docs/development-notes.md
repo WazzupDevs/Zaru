@@ -8,6 +8,95 @@
 
 ---
 
+## 2026-05-13 — Session A4f-2a (driver dispatch UX — backend foundation)
+
+A4f-2 brief 18-22 commit'lik tek-PR olarak gelmişti; mimari kararlar
+netleştikten sonra session **A4f-2a** (backend foundation) +
+**A4f-2b** (use cases tamamı + worker refactor + endpoints +
+notifications + iki mobile) olarak bölündü. A4d-1/2/3 örneğini izler.
+
+### Offer model: Booking state machine değişmiyor, ayrı aggregate
+
+Brief iki yaklaşımı önümüze koydu: (A) Booking enum'unu 11 state'e
+genişlet, (B) DriverOffer ayrı aggregate, Booking 9 state kalsın.
+**Seçim B.** Gerekçeler:
+
+- ADR 0019'un 37 state-machine test'i el değmeden korunuyor.
+- Müşteri "atandı → iptal → atandı" titremesi yaşamıyor (Booking
+  CONFIRMED kalır, offer arka planda ele alınır).
+- DRIVER_ASSIGNED state'i tek anlama gelir (driver gerçekten
+  başladı), iki anlama gelmez (offer-pending ya da accepted).
+
+Sonuç: `AcceptDriverOfferUseCase` artık CONFIRMED → DRIVER_ASSIGNED
+geçişini ve BOOKED `VehicleAvailability` INSERT'ünü yapan yer.
+A4f-2b'de matcher (`AssignDriverToBookingUseCase`) bu işten kurtulup
+sadece PENDING offer yaratan `CreateDriverOfferUseCase`'e refactor
+edilecek.
+
+### `DriverOffer.vehicleId` schema'da donduruldu — brief'te yoktu
+
+Brief'in örnek DDL'i offer satırında sadece `bookingId + driverProfileId`
+tutuyordu. Aksaklık: accept anında driver'ın vehicle'ını yeniden
+resolve etmek gerekir (multi-vehicle driver belirsiz + status='ACTIVE'
+filter accept ile offer arasında race'leyebilir). Matcher offer
+yaratırken hangi vehicle'ı seçtiğini biliyor; row'a dondurmak
+deterministic + race-free.
+
+Future-me: matcher yeni bir driver-vehicle pair için offer yaratırken
+`vehicleId` her zaman set edilmeli (Prisma schema NOT NULL).
+A4f-2b'de `CreateDriverOfferUseCase` bu alanı
+`DriverCandidate.vehicleId` ile dolduracak.
+
+### 5-dakika expiry in-tx + worker auto-sweep (defense in depth)
+
+`AcceptDriverOfferUseCase` `now > offer.expiresAt` kontrolü yapıyor
+ve süresi geçmiş offer'ı **aynı tx içinde** EXPIRED'a düşürüp
+`DriverOfferExpired` event yayıyor, HTTP'ye 410 dönüyor. Bu, her
+accept çağrısının kendi expiry guard'ı.
+
+A4f-2b'de eklenecek dispatch worker auto-sweep ikinci güvenlik
+katmanı: PENDING + `expiresAt < now` row'ları her tick'te bulup
+toplu EXPIRED'a düşürür ve outbox event'leri yayar. İki katman:
+
+- **Sync expiry (accept use case)** — driver tap'ladığı an süreyi
+  doğrular, kullanıcı yanıltıcı "accept başarılı" mesajı görmez.
+- **Async expiry (worker)** — driver hiç tap'lamadığında booking'in
+  yeni driver'a re-dispatch edilmesi için EXPIRED state'e mecbur.
+  Aksi halde row PENDING'de takılır.
+
+### Idempotent re-accept — sadece HTTP idempotency-key'e güvenme
+
+Mobile `Idempotency-Key: accept-${offerId}` yolluyor (API client
+default), ama use case kendi defense-in-depth'iyle de
+`status === "ACCEPTED"` ise erken return ediyor (commit yok,
+side-effect yok). Sebep:
+
+- Idempotency record TTL'i sınırlı; TTL sonrası aynı offerId için
+  tekrar accept request'i flow'u yeniden açar. Use-case-level guard
+  bunu erken kapatır.
+- Internal call path (smoke script, integration test, admin
+  override) idempotency interceptor'ı bypass edebilir. Use case
+  guard'ı her path için geçerli.
+
+Pattern: state machine'in `assertTransition`'ı **transition-only**
+guard'tır (PENDING → ACCEPTED). Aynı state'e idempotent yeniden
+giriş use case'in sorumluluğu — assertTransition'a girmeden önce
+`status === target` ise erken return.
+
+### Closed-beta commission rate %20 default
+
+`DriverProfile.commissionRate Decimal @default(0.20)` (eskiden 0.15).
+Closed beta için baseline 20%; admin promo amaçlı override edebilir.
+Mevcut seed/fixture row'ları 0.15'te kalır (pricing snapshot test'leri
+fixture'a kalibre). Migration sadece column default'unu flip eder —
+retro-update YOK.
+
+A4f-2b'de `GetDriverOfferUseCase` driverEarnings'i `totalAmount × (1 -
+driver.commissionRate)` ile hesaplayacak. Per-driver column zaten DB'de,
+yeni env / hardcoded magic number'a gerek yok.
+
+---
+
 ## 2026-05-06 — Session A4d-2 (mobile booking flow)
 
 ### Cached-user pattern needs storage version bump
