@@ -427,9 +427,11 @@ model DriverProfile {
   rejectionReason  String?                @map("rejection_reason")
   approvedAt       DateTime?              @map("approved_at")
   approvedByUserId String?                @map("approved_by_user_id") @db.Uuid
-  // Marketplace commission as a fraction (0.15 = 15%). Override per driver
-  // is allowed; default mirrors iyzico onboarding contract.
-  commissionRate   Decimal                @default(0.15) @map("commission_rate") @db.Decimal(5, 4)
+  // Marketplace commission as a fraction (0.20 = 20%). Override per driver
+  // is allowed; closed-beta default chosen to leave room for promo
+  // negotiation. Existing rows seeded at 0.15 are preserved by the
+  // 2026-05-13 migration — only the schema default changed.
+  commissionRate   Decimal                @default(0.20) @map("commission_rate") @db.Decimal(5, 4)
 
   // Dispatch metadata (A4c). Driver app (A4f) reports location every few
   // minutes; admin console can also write for tests. The generated
