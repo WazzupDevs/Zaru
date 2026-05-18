@@ -2915,6 +2915,147 @@ defense-in-depth, idempotent pattern, commission default).
 - A4c-payment iyzico Marketplace
 - A4g production deploy
 
+## 2026-05-18 — Session A4f-2b-1: Driver Offer Lifecycle Backend
+
+### Done
+
+A4f-2b'nin ilk parçası: A4f-2a foundation üzerine reject + lifecycle
+status updates + read queries eklendi. Worker refactor + endpoints
+
+- mobile A4f-2b-2 ve A4f-2b-3'e ertelendi (bilinçli scope-split).
+
+**G1 — DriverDispatchCooldown table**
+
+- Prisma model + migration `20260518100000_add_driver_dispatch_cooldowns`
+- `(driver_profile_id, booking_id)` unique → upsert sliding 5dk
+- `expires_at` index → A4f-2b-2 worker cleanup sweep için
+- Schema'ya `DriverProfile.dispatchCooldowns` + `Booking.dispatchCooldowns`
+  back-relation eklendi
+
+**G1 — RejectDriverOfferUseCase (10 unit test)**
+
+- `DriverDispatchCooldownRepositoryPort` + Prisma adapter (upsert /
+  findActive / deleteExpired)
+- 10 senaryo: happy path (REJECTED + cooldown + outbox event),
+  optional note, idempotent re-reject, not-found, forbidden,
+  expiry auto-promote, state machine guard, 500-char note cap
+  (`ValidationError`), concurrent modification race
+- Cooldown sliding window — re-reject upsert ile `expires_at` ileri
+  kaydırır, duplicate row yok
+- Outbox event `dispatch.DriverOfferRejected` (worker re-dispatch için)
+
+**G2 — UpdateDriverOfferStatusUseCase (27 unit test)**
+
+- 4 driver-driven transition: ACCEPTED → ON_THE_WAY → ARRIVED →
+  IN_PROGRESS → COMPLETED
+- IN_PROGRESS + COMPLETED booking row cascade (state machine
+  DRIVER_ASSIGNED → IN_PROGRESS → COMPLETED, optimistic lock her
+  iki tarafta)
+- ON_THE_WAY + ARRIVED offer-only (booking row dokunulmaz)
+- Idempotent same-state short-circuit (no writes, no events)
+- 10 parametrik invalid transition kontrolü (backwards / skip-step /
+  pre-accept / terminal)
+- Booking row missing veya wrong-state → `ConcurrentDispatchError`
+  (customer cancel cascade güvenli)
+- 4 outbox event: DriverOnTheWay / DriverArrived / BookingInProgress
+  / BookingCompleted (handler'lar A4f-2b-2'de)
+- DriverOfferStateMachine zaten lifecycle'ı pin'liyordu (A4f-2a, 52
+  test), bu oturum yeni transition eklemedi
+
+**G3 — Read Queries (28 unit test)**
+
+- `GetDriverOfferUseCase` — offer + booking + customer (masked) +
+  vehicle + driver earnings tek query, single read-only tx
+- `ListDriverOfferHistoryUseCase` — status filter + default limit 20,
+  bookings deduplicated batch fetch (O(1) tx round-trip)
+- `calculateDriverEarnings(totalAmount, commissionRate, currency)` —
+  Decimal-safe, iki ondalık, `driver.commissionRate` per-row override
+- `maskE164` — "+90555**\*4567" pattern, customer phone driver
+  response'unda plaintext **asla\*\* yok
+- ADR 0005 dependency rule: helpers `application/services/` altında
+  (domain layer application'dan import edemez)
+
+### Test sonuçları
+
+| Komut                                                      | Sonuç            |
+| ---------------------------------------------------------- | ---------------- |
+| `pnpm --filter @event-fleet/api typecheck`                 | ✓                |
+| `pnpm --filter @event-fleet/api test src/modules/dispatch` | **151/151 PASS** |
+
+| Spec dosyası                                        | Test count |
+| --------------------------------------------------- | ---------- |
+| driver-offer-state-machine.spec                     | 52         |
+| driver-matcher.service.spec                         | 12         |
+| accept-driver-offer.use-case.spec                   | 8          |
+| **reject-driver-offer.use-case.spec** (yeni)        | **10**     |
+| **update-driver-offer-status.use-case.spec** (yeni) | **27**     |
+| **get-driver-offer.use-case.spec** (yeni)           | **9**      |
+| **list-driver-offer-history.use-case.spec** (yeni)  | **8**      |
+| **driver-offer-view-helpers.spec** (yeni)           | **11**     |
+| assign-driver-to-booking.use-case.spec              | 10         |
+| booking-dispatch.service.spec                       | 4          |
+| **Toplam dispatch unit**                            | **151**    |
+
+A4f-2a baseline: 86 test → A4f-2b-1: **151 test (+65)**.
+
+### Plandan sapmalar
+
+| Sapma                                                                   | Gerekçe                                                                  |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| Brief 9 commit (3 per task) → **4 feat commit + 1 docs**                | Test + impl + adapter aynı PR, fonksiyonel olarak tek atomic ünite       |
+| Helpers `domain/services/` → `application/services/`                    | ADR 0005 dependency rule: domain, application/use-case'den import edemez |
+| State machine yeni transition test eklenmedi                            | A4f-2a 52 test'i zaten 4 lifecycle transition'ı pin'lemişti (12 valid)   |
+| `ValidationError` 500-char kapı — local domain error eklenmedi          | Generic `common/errors/domain-error.ts` zaten projede pattern            |
+| Brief `vehicle.vehicleType.name` enrichment → vehicle.brand+model+plate | VehicleRecord.vehicleTypeId resolve catalog hit gerektirir, gerek yok    |
+| Brief `customer.firstName` → `customer.displayName`                     | User schema'da `firstName` yok; `displayName` doğru alan                 |
+
+### Final commit listesi (branch, sırayla)
+
+| #   | Konu                                                                     |
+| --- | ------------------------------------------------------------------------ |
+| 1   | feat(db): add driver dispatch cooldown table                             |
+| 2   | feat(dispatch): implement reject driver offer with cooldown (TEST-FIRST) |
+| 3   | feat(dispatch): driver-driven lifecycle transitions (TEST-FIRST)         |
+| 4   | feat(dispatch): driver offer detail + history queries (TEST-FIRST)       |
+| 5   | docs: log session a4f-2b-1 progress (bu commit)                          |
+
+### Pending (A4f-2b-2 sıradaki, yeni session)
+
+- BookingDispatchWorker refactor (auto-expire PENDING sweep + reject
+  re-trigger + cooldown cleanup)
+- `AssignDriverToBookingUseCase` → `CreateDriverOfferUseCase`
+- `DispatchOffersController` + endpoint integration tests
+  (Testcontainers)
+- shared-types driver-offer Zod schemas
+- 4 notification event handler chain (DriverAccepted, DriverOnTheWay,
+  DriverArrived, BookingCompleted)
+- Driver mobile API client wiring
+
+### Pending (A4f-2b-3 sonraki, yeni session)
+
+- Driver mobile offer screen (countdown + accept/reject modal)
+- Driver mobile active job (status update buttons + history)
+- Customer mobile driver lifecycle UI (BookingCard badges)
+- Push deep linking (`eventfleetdriver://`)
+
+### Manuel doğrulama (A4f-2b-1 — PR review içinde)
+
+1. Migration `20260518100000_add_driver_dispatch_cooldowns` deploy ✓
+2. `\d driver_dispatch_cooldowns` 4 kolon + 2 index gösterir
+3. Reject use case unit'i 10 senaryoyu pin'liyor (Testcontainers
+   integration A4f-2b-2'de)
+4. Update use case unit'i 27 senaryoyu pin'liyor (state machine
+   cascade + idempotent + concurrent dahil)
+5. Query unit'leri commission + masking pin'liyor — driver response'unda
+   `+905551234567` plaintext'i `.not.toContain` assertion ile yakaladı
+
+### Next
+
+- **A4f-2b-2** worker refactor + endpoints + notifications (yeni session)
+- A4f-2b-3 mobile UI (yeni session)
+- A4c-payment iyzico Marketplace
+- A4g production deploy
+
 <!--
 Şablon (yeni oturum buradan başlasın):
 
