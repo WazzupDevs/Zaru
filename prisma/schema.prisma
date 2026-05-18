@@ -446,16 +446,17 @@ model DriverProfile {
   ratingAverage      Decimal   @default(5.0) @map("rating_average") @db.Decimal(3, 2)
   ratingCount        Int       @default(0) @map("rating_count")
 
-  createdAt      DateTime              @default(now()) @map("created_at")
-  updatedAt      DateTime              @updatedAt @map("updated_at")
-  deletedAt      DateTime?             @map("deleted_at")
-  version        Int                   @default(0)
-  user           User                  @relation(fields: [userId], references: [id])
-  vehicles       Vehicle[]
-  documents      Document[]
-  availabilities VehicleAvailability[]
-  bookings       Booking[]
-  driverOffers   DriverOffer[]
+  createdAt         DateTime                 @default(now()) @map("created_at")
+  updatedAt         DateTime                 @updatedAt @map("updated_at")
+  deletedAt         DateTime?                @map("deleted_at")
+  version           Int                      @default(0)
+  user              User                     @relation(fields: [userId], references: [id])
+  vehicles          Vehicle[]
+  documents         Document[]
+  availabilities    VehicleAvailability[]
+  bookings          Booking[]
+  driverOffers      DriverOffer[]
+  dispatchCooldowns DriverDispatchCooldown[]
 
   @@index([status])
   @@index([isOnline, lastLocationUpdate])
@@ -749,14 +750,15 @@ model Booking {
   updatedAt DateTime  @updatedAt @map("updated_at")
   deletedAt DateTime? @map("deleted_at")
 
-  customer        User            @relation("BookingCustomer", fields: [customerId], references: [id])
-  cancelledByUser User?           @relation("BookingCancelledBy", fields: [cancelledByUserId], references: [id])
-  driver          DriverProfile?  @relation(fields: [driverId], references: [id])
-  vehicle         Vehicle?        @relation(fields: [vehicleId], references: [id])
-  priceQuote      PriceQuote      @relation(fields: [priceQuoteId], references: [id])
-  vehicleType     VehicleType     @relation(fields: [vehicleTypeId], references: [id])
-  category        ServiceCategory @relation(fields: [categoryId], references: [id])
-  driverOffers    DriverOffer[]
+  customer          User                     @relation("BookingCustomer", fields: [customerId], references: [id])
+  cancelledByUser   User?                    @relation("BookingCancelledBy", fields: [cancelledByUserId], references: [id])
+  driver            DriverProfile?           @relation(fields: [driverId], references: [id])
+  vehicle           Vehicle?                 @relation(fields: [vehicleId], references: [id])
+  priceQuote        PriceQuote               @relation(fields: [priceQuoteId], references: [id])
+  vehicleType       VehicleType              @relation(fields: [vehicleTypeId], references: [id])
+  category          ServiceCategory          @relation(fields: [categoryId], references: [id])
+  driverOffers      DriverOffer[]
+  dispatchCooldowns DriverDispatchCooldown[]
 
   @@index([customerId, status])
   @@index([status, eventStartAt])
@@ -851,4 +853,30 @@ enum DriverRejectReason {
   TIME_CONFLICT
   VEHICLE_UNAVAILABLE
   OTHER
+}
+
+// A4f-2b-1 — short-lived cooldown the dispatch worker honours when
+// it re-dispatches a booking after a driver reject. We don't want
+// the matcher to immediately offer the same booking back to the
+// same driver; the booking-level (booking_id, driver_profile_id)
+// unique on driver_offers also prevents duplicate rows, but the
+// cooldown is the explicit "don't re-evaluate this candidate yet"
+// signal — symmetric with the booking dispatch cooldown that lives
+// on the booking row itself.
+model DriverDispatchCooldown {
+  id              String   @id @default(dbgenerated("uuidv7()")) @db.Uuid
+  driverProfileId String   @map("driver_profile_id") @db.Uuid
+  bookingId       String   @map("booking_id") @db.Uuid
+  expiresAt       DateTime @map("expires_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  driver  DriverProfile @relation(fields: [driverProfileId], references: [id])
+  booking Booking       @relation(fields: [bookingId], references: [id])
+
+  // One active cooldown per (driver, booking). Re-reject of the same
+  // pair upserts and slides the expiry forward.
+  @@unique([driverProfileId, bookingId])
+  // Worker cleanup sweep.
+  @@index([expiresAt])
+  @@map("driver_dispatch_cooldowns")
 }
