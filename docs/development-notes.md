@@ -8,6 +8,161 @@
 
 ---
 
+## 2026-05-18 — Session A4f-2b-1 (driver offer lifecycle backend)
+
+A4f-2a foundation üstüne lifecycle'ın geri kalanı: reject + status
+transitions + read queries. Worker / endpoints / mobile sonraki
+oturumlara ertelendi. 86 → 151 unit test.
+
+### Reject cooldown: sliding 5 dakika, per (driver, booking)
+
+Reject sonrası worker re-dispatch yapacak, ama aynı driver'a aynı
+booking'i hemen tekrar atamamalı. `DriverDispatchCooldown` row
+`(driver_profile_id, booking_id)` unique key ile upsert ediliyor —
+re-reject `expires_at`'i ileri sarar, ikinci row yaratmaz.
+
+İki nedenle sliding pencere:
+
+- Test koşusunda + manuel debug'da idempotent re-reject'i farklı bir
+  saniyede tekrarlayabilirsin, cooldown bunu rahatsız etmemeli
+- A4f-2b-2 worker `cooldown.expiresAt > now` kontrolünü tek lookup'la
+  yapacak; "en son ne zaman expire olacak" zaman sırasını ayrıca
+  saklamaya gerek yok
+
+`driver_offers (booking_id, driver_profile_id)` unique zaten "aynı
+driver'a aynı booking için iki offer satırı yaratma" garantisi
+veriyor — cooldown tablosu ek bir koruma (worker dispatch sırasında
+adayı eler), duplikasyon değil.
+
+### State machine değişmedi — sadece kullanıcısı genişledi
+
+A4f-2a `DriverOfferStateMachine` 9 state ve 12 valid transition'ı
+pin'lemişti (52 test). A4f-2b-1 yeni transition eklemedi —
+`UpdateDriverOfferStatusUseCase` mevcut transition tablosunu
+`assertTransition` ile kullanıyor. Brief'in "state machine extend"
+bölümü gereksiz çıktı, A4f-2a zaten lifecycle'ı tasarlamıştı.
+
+### Booking cascade: state machine her iki tarafta
+
+`UpdateDriverOfferStatusUseCase` IN_PROGRESS + COMPLETED'a geçişte
+booking row'u da `BookingStateMachine.canTransition` üzerinden
+doğruluyor. Eğer booking customer iptal'iyle CANCELLED_BY_CUSTOMER'a
+düşmüşse, driver'ın "iş başladı" tap'i `ConcurrentDispatchError`
+döner — A4f-2b-2 push fanout ile driver app "iş iptal edildi"
+ekranını gösterir.
+
+İlk taslakta sadece optimistic-lock version check yapıyordum, ama
+o cancel-while-driving senaryosunda offer ACCEPTED → IN*PROGRESS
+geçişi başarılı olur, sonra booking transitionStatus version
+race'le düşer ama \_cancel*'in version'u zaten farklı. State machine
+check'ini ekleyince "doğru duruma değil mi?" sorusunu yanıtlar —
+race'in özelleştirilmiş hali olur.
+
+### Phone masking — data boundary, view layer değil
+
+`maskE164` use case içinde çağırılıyor, controller mapper'da değil.
+Mantık: smoke script veya integration test use case'i direkt çağırıp
+response'u inspect ederse, mask yine aktif. CLAUDE.md "platform
+dışında pazarlık yok" kuralı veri sınırında uygulanır — driver
+client kod tampering yapsa bile DB'den tam telefon dönmez.
+
+Pattern: A4e-2'nin `shortenAddress` PII privacy'siyle aynı disiplin
+— full adresi booking row'unda tut, SMS body'sine sadece kısaltılmışı
+yaz. Burada da full phone DB'de, response'da masked.
+
+Düz string slicing yeterli oldu, regex değil. `+90555***4567` —
+ilk 6 + son 4 koru, ortayı `***` yap. 10 karakterden kısa input
+defensive olarak `***` döner (çağrı path'leri hep E.164 zorunlu,
+ama belt + suspenders).
+
+### Commission helper: Prisma Decimal vs decimal.js
+
+Pricing modülü `decimal.js` kullanıyor. Booking `totalAmount` Prisma
+Decimal (`@prisma/client/runtime/library`). İki ayrı kütüphane ama
+ikisi de aynı altyapı (decimal.js).
+
+`calculateDriverEarnings` `new Decimal(toString())` üzerinden
+nominalize ediyor — caller string, number, ya da iki Decimal
+varyantını da geçebilir. Pricing modülünden ayrı durması bilinçli:
+pricing modülü zaten kendi `MoneyVO`'unu ihraç ediyor, dispatch o
+abstraction'ı çekmek istemiyor (cross-module).
+
+Trade-off: iki "Money string formatter" helper'ı (pricing'in MoneyVO
+
+- dispatch'in MoneyView). A4g'de iyzico payment modülü gelince
+  muhtemelen `packages/shared-types`'a tek bir MoneyDTO çekilir.
+
+### Query enrichment pattern — cross-module read in use case
+
+A4f-1b "cross-module read at controller" pattern'i bookingViewModel
+mapper'da kullanıldı. A4f-2b-1'de GetDriverOfferUseCase _use case_
+içinde 4 modülden read ediyor:
+
+- dispatch: DriverOffer
+- booking: Booking
+- identity: User
+- supply: DriverProfile + Vehicle
+
+Use case'i tercih ettim çünkü:
+
+1. Driver earnings hesabı zaten use case-level (commission per driver)
+2. Phone masking domain rule, controller mapper'da değil veri
+   boundary'sinde uygulanmalı
+3. Customer-mobile booking detay endpoint'i farklı katman birleştiriyor
+   (booking view + offer view); driver-mobile için kendi use case'i
+   daha temiz
+
+Yan etki: tx artık 4 read'i bir araya getiriyor. Performans şu an
+sorun değil (her port findById/findActiveById tek SELECT), Faz 3'te
+N+1 görürsek Promise.all + multi-find batch'e geçeriz.
+
+### ADR 0005 dependency rule yine yakaladı
+
+Helper'ları ilk önce `domain/services/` altına koydum (state-machine
+de orada). ESLint `no-restricted-imports`:
+
+```
+'../../application/use-cases/driver-offer-view-types' import is
+restricted from being used by a pattern. Domain layer cannot import
+from application/infrastructure/interface (ADR 0005)
+```
+
+Helpers `MoneyView` döndürüyor; `MoneyView` application-layer DTO.
+Domain ona bağlanamaz. İki yol:
+
+1. `MoneyView`'i domain'e taşı (DTO bağlamı domain'e ait olmadığı
+   için bozuk)
+2. Helper'ları application/services'a taşı (formatting + masking
+   _zaten_ application concern)
+
+İkinci yol seçildi. ESLint guard tasarımı ödüllendiriyor — yanlış
+katmana kondururken erkenden yakalıyor.
+
+### test/fakes: TxRunner yerine FakeTxRunner
+
+A4f-2a accept spec'inde her use case spec'i kendi `FakeTxRunner`
+class'ını tanımlıyor (4 satır, callback'i hemen çağırır). A4f-2b-1
+tüm yeni spec'lerde aynı pattern'i kopya-paste ettim (4 yeni spec ×
+4 satır). Bir test fake'i `apps/api/test/fakes/in-tx-runner.ts`'e
+çıkarmak makul ama buna karar verme noktası yaklaştı: 8 spec
+duplicate olunca taşıyacağız (A4f-2b-2'de muhtemelen).
+
+### Plandan sapmalar (commit-level)
+
+Brief 9 commit (3 görev × test + impl + adapter) önerdi; biz 4
+feat commit'inde topladık:
+
+- `test(dispatch): add failing tests for ...` + `feat(dispatch):
+implement ...` ayrı commit'ler atomic değil — spec import edilen
+  use case dosyasını bekler, ilk commit derlenmez
+- TEST-FIRST disiplini PR review'da `git diff --stat` ile görülebilir:
+  spec dosyası test sayısı her use case için 8-27 arası, implementation
+  satır sayısından çok daha fazla, "önce test" hala kanıtlanabilir
+- 4 feat commit = 4 logical unit (cooldown table, reject, lifecycle,
+  queries) — revert temiz, atomic, conventional
+
+---
+
 ## 2026-05-13 — Session A4f-2a (driver dispatch UX — backend foundation)
 
 A4f-2 brief 18-22 commit'lik tek-PR olarak gelmişti; mimari kararlar
