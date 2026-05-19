@@ -9,7 +9,13 @@ export class BookingDispatchWorker extends WorkerHost {
     super();
   }
 
-  async process(): Promise<{ attempted: number; succeeded: number; failed: number }> {
+  async process(): Promise<{
+    expired: number;
+    attempted: number;
+    succeeded: number;
+    failed: number;
+    cooldownsCleared: number;
+  }> {
     return this.service.sweep();
   }
 }
