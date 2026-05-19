@@ -3056,6 +3056,159 @@ A4f-2a baseline: 86 test → A4f-2b-1: **151 test (+65)**.
 - A4c-payment iyzico Marketplace
 - A4g production deploy
 
+## 2026-05-19 — Session A4f-2b-2: Worker Refactor + Endpoints + Notification Chains
+
+### Done
+
+A4f-2a foundation + A4f-2b-1 use cases üzerine **orchestration
+katmanı**. Worker offer yaratıyor, endpoint'ler use case'leri expose
+ediyor, notification listener 4 lifecycle event chain'i tamamlıyor.
+Mobile UI A4f-2b-3'e bırakıldı.
+
+**G1 — CreateDriverOfferUseCase + worker refactor**
+
+- `CreateDriverOfferUseCase` (TEST-FIRST, 11 senaryo). Pre-conditions:
+  booking CONFIRMED, driver'da aktif offer yok, optimistic-lock
+  attempts++ tıklatması başarılı. 5dk expiresAt + PII-free
+  `dispatch.DriverDispatched` payload.
+- `BookingDispatchService` 3-faz sweep'e dönüştü:
+  - **Phase A** PENDING offer auto-expire (expiresAt < now → EXPIRED
+    - `dispatch.DriverOfferExpired` outbox event per row)
+  - **Phase B** `findDispatchable` → her booking için aktif offer
+    yoksa matcher çalıştır (`priorDriverIds` exclude) → match
+    bulunursa `CreateDriverOfferUseCase`
+  - **Phase C** `cooldownRepo.deleteExpired` — A4f-2b-1 cooldown
+    tablosu maintenance
+- `AssignDriverToBookingUseCase` + spec **silindi**. ManualReassign
+  kendi matcher path'ini sürdürüyor (admin override).
+
+**G2 — Reject re-trigger listener**
+
+- `DispatchRetriggerListener` `@OnEvent("dispatch.DriverOfferRejected")`
+  - `("dispatch.DriverOfferExpired")` → BullMQ kick. 30s scheduler tick
+    arada beklemesin diye; jobId saniye-bazlı slot ile idempotent.
+
+**G3 — shared-types Zod schemas**
+
+- `DriverOfferDetail / Summary / RejectOfferInput /
+UpdateOfferStatusInput / ListDriverOfferHistoryQuery`
+- `DriverOfferMoney` (string-encoded amount + currency)
+- `ListDriverOfferHistoryQuerySchema` status'ü tek-değer veya array
+  kabul edip array'e normalize ediyor (mobile client iki şekilde de
+  yazabilir)
+
+**G4 — Controllers**
+
+- `DispatchOffersController` `@Roles("DRIVER")`:
+  GET / GET :id / POST :id/accept / POST :id/reject
+- `DriverStatusController` `@Roles("DRIVER")`:
+  PATCH :id/status (4 lifecycle hedef status)
+- Accept + reject + status update Idempotency-Key interceptor'ü ile
+- Use case throw'ları (Offer\*Error) global filter mapping zaten var:
+  - OfferNotFound → 404
+  - OfferExpired → 410 Gone
+  - OfferStateTransition → 409
+  - OfferForbidden → 403
+  - ValidationError → 400 (Zod parse)
+  - ConcurrentOfferModification → 409
+
+**G5 — Integration spec (Testcontainers)**
+
+- `dispatch.integration-spec` rewrite — assertion shape "booking
+  DRIVER_ASSIGNED" → "PENDING offer yaratıldı + booking CONFIRMED"
+- `notifications-event-chain` rewrite — DriverDispatched testi iki
+  faza ayrıldı: dispatch (driver SMS only), sonra accept (customer
+  SMS)
+- `full-lifecycle.e2e` rewrite — accept aşaması arada, customer
+  SMS'i accept'te firilemiyor
+- `dispatch-offer-flow.integration-spec` **yeni** (7 senaryo): GET
+  detail (masked phone) / POST accept (DRIVER_ASSIGNED + customer
+  SMS) / POST reject (cooldown + outbox) / PATCH status lifecycle
+  (4 step, 3 SMS) / GET history (status filter) / 403 başka driver
+  / 410 expired offer
+
+**G6 — Notification chain (customer)**
+
+- 4 yeni `NotificationKind` enum: `DRIVER_ON_THE_WAY`, `DRIVER_ARRIVED`,
+  `BOOKING_COMPLETED` (migration `20260518150000_notification_kind_lifecycle`)
+- 3 yeni Türkçe SMS template (driver_on_the_way / driver_arrived /
+  booking.completed)
+- 4 yeni push title TR
+- 4 yeni handler:
+  - `dispatch.DriverOfferAccepted` → DRIVER_ASSIGNED_TO_BOOKING
+    (eskiden DriverDispatched'de fire ediyordu — taşındı)
+  - `dispatch.DriverOnTheWay` → DRIVER_ON_THE_WAY
+  - `dispatch.DriverArrived` → DRIVER_ARRIVED
+  - `dispatch.BookingCompleted` → BOOKING_COMPLETED
+- `fanoutCustomerLifecycle` helper — 4 handler aynı şekilde booking
+  context → customer context → pickChannel → queueNotification
+  zincirini izliyor
+- DriverDispatched **artık customer'a fire etmiyor** (offer flow'da
+  "atandı" değil "teklif edildi" anlamına geliyor — DRIVER_OFFER_ACCEPTED
+  gerçek lock-in noktası)
+
+### Test sonuçları
+
+| Komut                                           | Sonuç            |
+| ----------------------------------------------- | ---------------- |
+| `pnpm --filter @event-fleet/api typecheck`      | ✓                |
+| `pnpm --filter @event-fleet/shared-types build` | ✓                |
+| `pnpm --filter @event-fleet/api test`           | **455/455 PASS** |
+| `pnpm --filter @event-fleet/api build`          | ✓                |
+
+Integration testleri Docker Desktop uyuyor durumda lokalde
+koşulamadı — CI'da koşacak.
+
+### Plandan sapmalar
+
+| Sapma                                                                            | Gerekçe                                                                                                               |
+| -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Brief 7-9 commit → **5 feat/refactor + 1 docs + 1 test**                         | Atomic commit'ler logical unit'lere kondu (orchestration / endpoints / notif / integration / docs)                    |
+| `BookingDispatchAttempt` ayrı tablosu yok                                        | `Booking.dispatchAttempts` zaten var, counter orada — yeni tablo gereksiz                                             |
+| `findCooldownDriverIds` worker helper'ı **silindi**                              | (booking, driver) unique zaten aynı driver'a re-offer yasaklıyor; `findPriorDriverIdsForBooking` exclusion'u kapsıyor |
+| ADR 0023 yazılmadı                                                               | Brief'te opsiyonel olarak markalanmıştı; dev-notes 5 karar detayı zaten ADR-level                                     |
+| Brief'in `booking.DriverAccepted` event adı → **`dispatch.DriverOfferAccepted`** | Foundation'da yayılan gerçek event name; A4f-2a/2b-1 dispatch namespace'inde                                          |
+
+### Final commit listesi (branch, sırayla)
+
+| #   | Konu                                                                              |
+| --- | --------------------------------------------------------------------------------- |
+| 1   | refactor(dispatch): replace AssignDriverToBooking with offer-based worker flow    |
+| 2   | feat(dispatch): driver offer endpoints + retrigger listener + shared-types        |
+| 3   | feat(notifications): customer chain for accept / on-the-way / arrived / completed |
+| 4   | test(dispatch): port integration specs to the offer-based flow                    |
+| 5   | test(dispatch): end-to-end offer lifecycle integration spec                       |
+| 6   | docs: log session a4f-2b-2 progress (bu commit)                                   |
+
+### Pending (A4f-2b-3 sıradaki — mobile UI, yeni session)
+
+- Driver mobile offer screen (countdown + accept/reject modal)
+- Driver mobile active job (status update buttons + history)
+- Customer mobile BookingDetail lifecycle UI (12-status badge)
+- Customer mobile BookingCard 4-status badge update
+- Push deep linking (`eventfleetdriver://`)
+- Driver mobile API client wiring (yeni endpoint'ler)
+
+### Manuel doğrulama (PR review içinde)
+
+1. Migration `20260518150000_notification_kind_lifecycle` deploy ✓
+2. Driver app'ten OTP → JWT token sonra `GET /dispatch/offers/:id`
+   detail döner, phone masked
+3. `POST .../accept` → booking DRIVER_ASSIGNED + customer SMS "atandı"
+4. `PATCH .../status status=ON_THE_WAY/ARRIVED/IN_PROGRESS/COMPLETED`
+   sırayla → her birinde customer SMS
+5. `POST .../reject reason=TOO_FAR` → cooldown row + dispatch
+   re-trigger anında (BullMQ idempotent)
+6. Concurrent two accepts → biri 200 biri 409 (offer race güvenli)
+7. 5dk dolan offer accept → 410 Gone + offer EXPIRED
+
+### Next
+
+- **A4f-2b-3** mobile UI (yeni session, fresh-context)
+- A4f-3 polish (background location + Lucide + jest driver-mobile)
+- A4c-payment iyzico Marketplace
+- A4g production deploy
+
 <!--
 Şablon (yeni oturum buradan başlasın):
 

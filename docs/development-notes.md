@@ -8,6 +8,165 @@
 
 ---
 
+## 2026-05-19 — Session A4f-2b-2 (worker refactor + endpoints + notification chains)
+
+A4f-2b-1 use case'lerini production'a takan orchestration katmanı.
+Worker offer yaratıyor, endpoint'ler use case'leri açıyor, notification
+listener 4 yeni customer chain'i bağlıyor.
+
+### AssignDriverToBooking silindi — booking transition `accept` use case'inde
+
+A4c'de `AssignDriverToBookingUseCase` matcher + booking transition +
+availability INSERT tek tx içinde yapıyordu. A4f-2a `AcceptDriverOffer
+UseCase` bu üç işi devraldı; A4f-2b-2'de eski use case **silinebilirdi**
+çünkü artık çağıran kalmadı.
+
+Silmek doğru kararıydı:
+
+- Worker → CreateDriverOffer (offer yarat, booking CONFIRMED)
+- AcceptDriverOffer → booking DRIVER_ASSIGNED + availability INSERT
+- ManualReassignDriver → kendi matcher path'ini sürdürüyor (admin
+  flow, offer'sız direct reassign)
+
+3 dosya silindi: use case + spec + import'ları test'lerden.
+Ama önce 3 entegrasyon spec'inde `assignUseCase.execute(...)` çağrıları
+vardı; onları `dispatchService.sweep()` + `acceptOfferUseCase.execute()`
+adımlarına ayırmak zorunda kaldım. Görece sancılı bir refactor —
+worker'ı çağırmak için BullMQ scheduler beklemeden direkt
+`BookingDispatchService` injection. ADR 0020 + 0021 zaten bu pattern'i
+predicat ediyor (drainOnce + direct invoke).
+
+### Worker 3-faz sweep — Phase A/B/C ayrımı
+
+Eski sweep tek loop: `findDispatchable` → her booking için
+`AssignDriverToBookingUseCase.execute()`. Yeni sweep üç ayrı sorumluluğa
+ayrıldı:
+
+- **Phase A** — `findExpiredPending` + her birine `transitionStatus
+to=EXPIRED` + outbox event. Worker'ın asıl güvenlik ağı — driver
+  hiç tap'lamadıysa offer PENDING'de takılı kalmasın. Sync expiry
+  Accept/Reject use case'lerinde zaten var (A4f-2a/2b-1 in-tx).
+- **Phase B** — `findDispatchable` (booking-level cooldown, dispatchAttempts
+  < max) → her booking için aktif offer kontrolü (varsa skip) →
+  `findPriorDriverIdsForBooking` ile prior offer alanları exclude →
+  `findCandidates(... excludeDriverIds)` → matcher → `CreateDriverOfferUseCase`.
+- **Phase C** — `cooldownRepo.deleteExpired(now)`. Maintenance task,
+  Phase B aslında cooldown row'larını kullanmıyor (priorDriverIds
+  yeterli), ama tablo unbounded büyümesin.
+
+Per-phase log: `{ expired, attempted, succeeded, failed, cooldownsCleared }`.
+Bir tick'te 0 iş varsa sessiz, herhangi biri >0 ise info logu.
+Fail-isolated — bir booking'in throw'u batch'i durdurmuyor.
+
+### Retrigger listener — BullMQ idempotency saniye-bazlı slot
+
+`DispatchRetriggerListener` `OnEvent("dispatch.DriverOfferRejected")` +
+`("dispatch.DriverOfferExpired")` dinler ve immediate dispatch kick'ler.
+30s scheduler tick zaten yakalar ama "looking for driver" UX'i 30s
+beklemesin diye.
+
+BullMQ duplicate-job sorunu: aynı bookingId için aynı tick içinde
+hem reject hem expired event gelirse, ya da retry storm'da iki kez
+fire ederse, iki ayrı job kuyrukta yığılabilir. Çözüm: jobId'yi
+`retrigger-<reason>-<bookingId>-<unix-sec>` yapıyoruz; saniye-bazlı
+slot içinde aynı (reason, bookingId) için tek job. Worker zaten
+concurrency=1 idempotent — duplicate slip etse bile findDispatchable
+filter'i aynı booking'i ikinci sefer no-op'a düşürür.
+
+### Customer notification: DriverDispatched → DriverOfferAccepted
+
+Bu **behavior breaking** bir değişiklikti. Eski listener
+`dispatch.DriverDispatched`'ten:
+
+- Driver'a SMS NEW_BOOKING_OFFER
+- Customer'a SMS DRIVER_ASSIGNED_TO_BOOKING ✗ (yanlış)
+
+Offer flow'da DriverDispatched **"teklif edildi"** demek; driver
+henüz kabul etmedi. Customer'a "atandı" mesajı atmak yanıltıcı —
+30s sonra offer expire olsa, customer iki kez "atandı/atanmadı"
+mesajı alır.
+
+Yeni: DriverDispatched → sadece driver SMS. Yeni listener
+`dispatch.DriverOfferAccepted`'i dinler → customer "atandı" SMS.
+Bu, booking gerçekten DRIVER_ASSIGNED'a transition ettiği nokta.
+
+Tested with `notifications-event-chain.integration-spec`: dispatch
+adımında customer SMS kuyruğuna düşmüyor, accept'ten sonra düşüyor.
+
+### 4 yeni handler, 1 helper
+
+`fanoutCustomerLifecycle(params)` 4 post-accept event handler'ı
+arasında ortaklaşıyor: `getBookingContext(bookingId)` → `getCustomerContext`
+→ `pickChannel` → `queueNotification`. Her @OnEvent handler tek
+satır dispatch oldu:
+
+```ts
+@OnEvent("dispatch.DriverOnTheWay")
+async onDriverOnTheWay(payload) {
+  await this.fanoutCustomerLifecycle({
+    bookingId: payload.bookingId,
+    kind: "DRIVER_ON_THE_WAY",
+    templateKey: "dispatch.driver_on_the_way",
+    sourceEventType: "dispatch.DriverOnTheWay",
+  });
+}
+```
+
+Template variable'ları aynı (`customerName + bookingShortId`), kind +
+templateKey değişiyor. Push title `pushTitleFor(kind)` mapping'inden
+geliyor — SMS body ile aynı dosya render ediliyor (ADR 0021 SMS+PUSH
+template tek-dosya).
+
+### shared-types: status query coerce single → array
+
+`ListDriverOfferHistoryQuerySchema` status alanı:
+
+```ts
+status: z.union([DriverOfferStatusSchema, z.array(DriverOfferStatusSchema)])
+  .optional()
+  .transform((v) => (v === undefined ? undefined : Array.isArray(v) ? v : [v]));
+```
+
+Mobile client `?status=COMPLETED` veya `?status=COMPLETED&status=REJECTED`
+yazabilsin. Express body-parser tek query parametresi tek string,
+çoklu array veriyor — Zod'da bu normalize edilmiş halini garantiliyor.
+
+### NotificationKind enum migration — ALTER TYPE ADD VALUE
+
+Postgres enum'a yeni değer eklerken `ALTER TYPE ... ADD VALUE`
+kullanılır; `ALTER TYPE ... ADD ENUM` veya `CREATE TYPE ... AS ENUM`
+silip yeniden oluşturmak yerine non-destructive. Migration:
+
+```sql
+ALTER TYPE "NotificationKind" ADD VALUE IF NOT EXISTS 'DRIVER_ON_THE_WAY';
+ALTER TYPE "NotificationKind" ADD VALUE IF NOT EXISTS 'DRIVER_ARRIVED';
+ALTER TYPE "NotificationKind" ADD VALUE IF NOT EXISTS 'BOOKING_COMPLETED';
+```
+
+`IF NOT EXISTS` migrate-dev / migrate-deploy idempotent — aynı
+migration iki kez çalışsa hata vermez. Bu kaydedildi çünkü A4e-1'de
+NotificationKind eklerken aynı pattern manuel SQL yazmak gerekmişti
+(Prisma DSL enum migration üretemiyor).
+
+### Test integration: AppModule + supertest + Testcontainers
+
+Yeni `dispatch-offer-flow.integration-spec` 7 senaryoyla offer
+lifecycle'ı HTTP üzerinden walk'lıyor. Driver auth token'ı
+`signAccessTokenFor(app, driver.user)` ile mint ediliyor — OTP loop
+baypas, JwtTokenServicePort direkt. Driver builder zaten role=DRIVER
+
+- APPROVED status ile DriverProfile yaratıyor; controller `@Roles("DRIVER")`
+  guard'ı geçiyor.
+
+Phone masking integration tarafında **gerçek HTTP response** üzerinde
+test edildi: `expect(JSON.stringify(res.body)).not.toContain(customer.phoneE164)`.
+A4f-2b-1 unit test'i aynı assertion'ı kullanıyordu — pattern endpoint
+seviyesinde de pin'lendi. Future onboarding: phone masking veri
+boundary'sinde, controller mapper'da değil — unit + integration
+ikisi de aynı veri sınırını test ediyor.
+
+---
+
 ## 2026-05-18 — Session A4f-2b-1 (driver offer lifecycle backend)
 
 A4f-2a foundation üstüne lifecycle'ın geri kalanı: reject + status
