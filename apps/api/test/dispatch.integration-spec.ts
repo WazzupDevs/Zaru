@@ -190,9 +190,18 @@ describe("Dispatch matching (Testcontainers)", () => {
     const evt = await prisma.client.outboxEvent.findFirst({
       where: { aggregateId: bookingId, eventType: "dispatch.DriverDispatched" },
     });
-    const json = JSON.stringify(evt!.payload);
-    expect(json).not.toContain("34ABC123");
-    expect(json).not.toContain("41.009");
-    expect(json).not.toContain("28.98");
+    // Field-level property checks. Earlier this used substring matching on
+    // JSON.stringify(payload), which produced a false positive when the
+    // dispatchedAt timestamp's "...28.98..." (seconds + ms) collided with
+    // the lng fixture "28.98". The PII discipline (ADR 0019) is about
+    // payload keys: plate / lat / lng / pickupLat / pickupLng must never
+    // appear as fields, regardless of whether their string values happen
+    // to coincide with timestamp digits.
+    const payload = evt!.payload as Record<string, unknown>;
+    expect(payload).not.toHaveProperty("plate");
+    expect(payload).not.toHaveProperty("lat");
+    expect(payload).not.toHaveProperty("lng");
+    expect(payload).not.toHaveProperty("pickupLat");
+    expect(payload).not.toHaveProperty("pickupLng");
   });
 });

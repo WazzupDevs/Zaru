@@ -161,6 +161,41 @@ implement ...` ayrı commit'ler atomic değil — spec import edilen
 - 4 feat commit = 4 logical unit (cooldown table, reject, lifecycle,
   queries) — revert temiz, atomic, conventional
 
+### Flaky test pattern keşfi (A4f-2b-1 post-merge fix)
+
+`dispatch.integration-spec.ts:196` PII assertion'ı string substring
+search kullanıyordu (`expect(json).not.toContain("28.98")`). Test
+çoğu zaman geçti ama 17:43:28.98xZ timestamp'inde lng koordinatı
+(28.98) ile çakıştı, false positive.
+
+Doğru pattern: field-level property check. JSON parse +
+`toHaveProperty` ile schema-aware assertion. PII discipline aslında
+"key shape" — alan adlarının payload'da olmamasını kontrol et,
+değer substring'ini değil.
+
+A4-Stab'da test stabilization yapılmıştı ama bu spesifik scenario
+(timestamp digit collision with coordinate fixture) kapsam dışında
+kalmıştı. Branch `fix/dispatch-pii-assertion` tek commit ile düzeltti.
+
+Faz 3 disiplin: **PII assertion'larında string search yasak,
+property check zorunlu.** Yeni geliştiriciye onboarding'de
+anlatılacak pattern:
+
+```ts
+// YANLIŞ — substring çakışmaları flaky test'e yol açar
+expect(JSON.stringify(payload)).not.toContain("28.98");
+
+// DOĞRU — payload schema'sındaki PII alanlarını adıyla yasakla
+const p = payload as Record<string, unknown>;
+expect(p).not.toHaveProperty("lat");
+expect(p).not.toHaveProperty("lng");
+expect(p).not.toHaveProperty("plate");
+```
+
+Eğer "değer hiç görünmesin" kontrolü gerekiyorsa (örn. credential),
+nested traversal + structured deep-search helper'ı yaz; ham
+`JSON.stringify + indexOf` yasak.
+
 ---
 
 ## 2026-05-13 — Session A4f-2a (driver dispatch UX — backend foundation)
