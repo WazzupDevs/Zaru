@@ -13,22 +13,22 @@ import { truncateTransactionalTables } from "./helpers/db-cleanup";
 import { buildDriver } from "./helpers/driver-builder";
 import { buildQuote } from "./helpers/quote-builder";
 import { buildUser } from "./helpers/user-builder";
-import { AssignDriverToBookingUseCase } from "../src/modules/dispatch/application/use-cases/assign-driver-to-booking.use-case";
+import { BookingDispatchService } from "../src/modules/dispatch/infrastructure/workers/booking-dispatch.service";
 
 /**
- * Dispatch integration spec — A4-Stab.
+ * Dispatch integration spec — A4-Stab + A4f-2b-2 rewrite.
  *
- * The PostGIS candidate query and the optimistic-lock assignDriver
- * transition are both unit-tested (driver-matcher.spec.ts +
- * assign-driver-to-booking.use-case.spec.ts), but neither hits the
- * real Postgres + PostGIS extension. This spec walks the actual SQL
- * + GIST index on Testcontainers so radius / freshness / vehicle-
- * conflict filters work end-to-end.
+ * Under the offer flow the worker creates a PENDING DriverOffer
+ * instead of immediately writing booking DRIVER_ASSIGNED. The PostGIS
+ * matcher behaviour (radius / freshness / vehicle-conflict /
+ * exclusion) carries over; assertions changed from "booking is now
+ * DRIVER_ASSIGNED" to "driver_offers row was created (booking still
+ * CONFIRMED, accept use case handles the assignment)".
  */
 describe("Dispatch matching (Testcontainers)", () => {
   let app: NestExpressApplication;
   let prisma: PrismaService;
-  let assignUseCase: AssignDriverToBookingUseCase;
+  let dispatchService: BookingDispatchService;
   let categoryId: string;
   let vehicleTypeId: string;
 
@@ -39,7 +39,7 @@ describe("Dispatch matching (Testcontainers)", () => {
     configureApp(app);
     await app.init();
     prisma = app.get(PrismaService);
-    assignUseCase = app.get(AssignDriverToBookingUseCase);
+    dispatchService = app.get(BookingDispatchService);
   });
 
   afterAll(async () => {
@@ -66,7 +66,7 @@ describe("Dispatch matching (Testcontainers)", () => {
     return { bookingId: res.body.id as string, customer, token };
   }
 
-  it("matches the closest qualifying driver and emits dispatch.DriverDispatched", async () => {
+  it("matches the closest qualifying driver and emits dispatch.DriverDispatched + creates a PENDING offer", async () => {
     // Sultanahmet is ~5 km from the booking pickup default (smoke pin).
     // Three drivers, only the close one is the closest match.
     const close = await buildDriver(prisma.client, { vehicleTypeId, lat: 41.009, lng: 28.98 });
@@ -76,40 +76,42 @@ describe("Dispatch matching (Testcontainers)", () => {
     void far;
 
     const { bookingId } = await aConfirmedBooking();
-    const result = await assignUseCase.execute({ bookingId });
+    const stats = await dispatchService.sweep();
 
-    expect(result.success).toBe(true);
-    expect(result.driverProfileId).toBe(close.driverProfileId);
+    expect(stats.succeeded).toBe(1);
 
+    // Booking stays CONFIRMED — the offer flow only transitions to
+    // DRIVER_ASSIGNED on accept (AcceptDriverOfferUseCase).
     const updated = await prisma.client.booking.findUnique({ where: { id: bookingId } });
-    expect(updated?.status).toBe("DRIVER_ASSIGNED");
-    expect(updated?.driverId).toBe(close.driverProfileId);
-    expect(updated?.vehicleId).toBe(close.vehicleId);
+    expect(updated?.status).toBe("CONFIRMED");
+    expect(updated?.driverId).toBeNull();
+
+    const offer = await prisma.client.driverOffer.findFirst({
+      where: { bookingId, driverProfileId: close.driverProfileId },
+    });
+    expect(offer?.status).toBe("PENDING");
+    expect(offer?.vehicleId).toBe(close.vehicleId);
 
     const dispatchEvents = await prisma.client.outboxEvent.findMany({
       where: { aggregateId: bookingId, eventType: "dispatch.DriverDispatched" },
     });
     expect(dispatchEvents).toHaveLength(1);
-
-    // Sentinel BOOKED availability blocks the driver for the event window.
-    const block = await prisma.client.vehicleAvailability.findFirst({
-      where: { vehicleId: close.vehicleId, type: "BOOKED" },
-    });
-    expect(block?.bookingId).toBe(bookingId);
   });
 
   it("offline drivers are filtered out (no candidates → DispatchFailed)", async () => {
     await buildDriver(prisma.client, { vehicleTypeId, isOnline: false });
     const { bookingId } = await aConfirmedBooking();
 
-    const result = await assignUseCase.execute({ bookingId });
+    const stats = await dispatchService.sweep();
+    expect(stats.failed).toBe(1);
+    expect(stats.succeeded).toBe(0);
 
-    expect(result.success).toBe(false);
-    expect(result.reason).toBe("no_drivers_in_radius");
     const dispatchFailed = await prisma.client.outboxEvent.findFirst({
       where: { aggregateId: bookingId, eventType: "dispatch.DispatchFailed" },
     });
     expect(dispatchFailed).not.toBeNull();
+    const offer = await prisma.client.driverOffer.findFirst({ where: { bookingId } });
+    expect(offer).toBeNull();
   });
 
   it("stale-location drivers are filtered out (lastLocationUpdate older than freshness)", async () => {
@@ -119,8 +121,10 @@ describe("Dispatch matching (Testcontainers)", () => {
     });
     const { bookingId } = await aConfirmedBooking();
 
-    const result = await assignUseCase.execute({ bookingId });
-    expect(result.success).toBe(false);
+    const stats = await dispatchService.sweep();
+    expect(stats.failed).toBe(1);
+    const offer = await prisma.client.driverOffer.findFirst({ where: { bookingId } });
+    expect(offer).toBeNull();
   });
 
   it("drivers beyond max radius are filtered out", async () => {
@@ -128,9 +132,12 @@ describe("Dispatch matching (Testcontainers)", () => {
     await buildDriver(prisma.client, { vehicleTypeId, lat: 39.92, lng: 32.85 });
     const { bookingId } = await aConfirmedBooking();
 
-    const result = await assignUseCase.execute({ bookingId });
-    expect(result.success).toBe(false);
-    expect(result.reason).toBe("no_drivers_in_radius");
+    const stats = await dispatchService.sweep();
+    expect(stats.failed).toBe(1);
+    const dispatchFailed = await prisma.client.outboxEvent.findFirst({
+      where: { aggregateId: bookingId, eventType: "dispatch.DispatchFailed" },
+    });
+    expect((dispatchFailed?.payload as { reason?: string }).reason).toBe("no_drivers_in_radius");
   });
 
   it("drivers already booked in the same window are filtered out", async () => {
@@ -147,34 +154,27 @@ describe("Dispatch matching (Testcontainers)", () => {
     });
     const { bookingId } = await aConfirmedBooking();
 
-    const result = await assignUseCase.execute({ bookingId });
-    expect(result.success).toBe(false);
+    const stats = await dispatchService.sweep();
+    expect(stats.failed).toBe(1);
+    const offer = await prisma.client.driverOffer.findFirst({ where: { bookingId } });
+    expect(offer).toBeNull();
   });
 
-  it("two concurrent assigns on the same booking: one wins, the other throws ConcurrentDispatchError", async () => {
+  it("two sweep passes on the same booking with an active offer: second pass does not create a duplicate", async () => {
     await buildDriver(prisma.client, { vehicleTypeId, lat: 41.009, lng: 28.98 });
     const { bookingId } = await aConfirmedBooking();
 
-    const results = await Promise.allSettled([
-      assignUseCase.execute({ bookingId }),
-      assignUseCase.execute({ bookingId }),
-    ]);
-
-    const fulfilled = results.filter((r) => r.status === "fulfilled");
-    const rejected = results.filter((r) => r.status === "rejected");
-    // Either both fulfilled (one success + one no-eligible after seeing the
-    // freshly-blocked availability) or one fulfilled + one rejected
-    // (concurrent dispatch error). Both shapes are valid and demonstrate
-    // race safety. The DB-side invariant is what matters.
-    expect(fulfilled.length + rejected.length).toBe(2);
-
-    const updated = await prisma.client.booking.findUnique({ where: { id: bookingId } });
-    expect(updated?.status).toBe("DRIVER_ASSIGNED");
-
-    const blockCount = await prisma.client.vehicleAvailability.count({
-      where: { bookingId, type: "BOOKED" },
+    await dispatchService.sweep();
+    // Reset lastDispatchAt to bypass cooldown for the second tick.
+    await prisma.client.booking.update({
+      where: { id: bookingId },
+      data: { lastDispatchAt: null },
     });
-    expect(blockCount).toBe(1);
+    await dispatchService.sweep();
+
+    const offers = await prisma.client.driverOffer.findMany({ where: { bookingId } });
+    expect(offers).toHaveLength(1);
+    expect(offers[0]!.status).toBe("PENDING");
   });
 
   it("dispatch.DriverDispatched payload carries no PII (no plate / lat / lng)", async () => {
@@ -185,18 +185,15 @@ describe("Dispatch matching (Testcontainers)", () => {
       plateNumber: "34ABC123",
     });
     const { bookingId } = await aConfirmedBooking();
-    await assignUseCase.execute({ bookingId });
+    await dispatchService.sweep();
 
     const evt = await prisma.client.outboxEvent.findFirst({
       where: { aggregateId: bookingId, eventType: "dispatch.DriverDispatched" },
     });
-    // Field-level property checks. Earlier this used substring matching on
-    // JSON.stringify(payload), which produced a false positive when the
-    // dispatchedAt timestamp's "...28.98..." (seconds + ms) collided with
-    // the lng fixture "28.98". The PII discipline (ADR 0019) is about
-    // payload keys: plate / lat / lng / pickupLat / pickupLng must never
-    // appear as fields, regardless of whether their string values happen
-    // to coincide with timestamp digits.
+    // Field-level property checks (A4f-2b-1 flaky-fix pattern). PII
+    // discipline is about payload SHAPE — these keys must never
+    // appear, regardless of whether their string values happen to
+    // coincide with unrelated digits.
     const payload = evt!.payload as Record<string, unknown>;
     expect(payload).not.toHaveProperty("plate");
     expect(payload).not.toHaveProperty("lat");

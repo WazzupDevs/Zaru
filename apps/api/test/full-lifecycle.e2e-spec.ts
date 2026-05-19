@@ -14,7 +14,8 @@ import { buildDriver } from "./helpers/driver-builder";
 import { buildQuote } from "./helpers/quote-builder";
 import { buildUser } from "./helpers/user-builder";
 import { PrismaService } from "../src/common/prisma/prisma.service";
-import { AssignDriverToBookingUseCase } from "../src/modules/dispatch/application/use-cases/assign-driver-to-booking.use-case";
+import { AcceptDriverOfferUseCase } from "../src/modules/dispatch/application/use-cases/accept-driver-offer.use-case";
+import { BookingDispatchService } from "../src/modules/dispatch/infrastructure/workers/booking-dispatch.service";
 import {
   SMS_SENDER_PORT,
   type SmsSenderPort,
@@ -31,7 +32,8 @@ describe("Full booking lifecycle (e2e)", () => {
   let app: NestExpressApplication;
   let prisma: PrismaService;
   let mockSms: MockSmsSender;
-  let assignUseCase: AssignDriverToBookingUseCase;
+  let dispatchService: BookingDispatchService;
+  let acceptOfferUseCase: AcceptDriverOfferUseCase;
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
@@ -40,7 +42,8 @@ describe("Full booking lifecycle (e2e)", () => {
     configureApp(app);
     await app.init();
     prisma = app.get(PrismaService);
-    assignUseCase = app.get(AssignDriverToBookingUseCase);
+    dispatchService = app.get(BookingDispatchService);
+    acceptOfferUseCase = app.get(AcceptDriverOfferUseCase);
     const sender = app.get<SmsSenderPort>(SMS_SENDER_PORT);
     if (!(sender instanceof MockSmsSender)) {
       throw new Error("e2e expects MockSmsSender");
@@ -95,18 +98,31 @@ describe("Full booking lifecycle (e2e)", () => {
     const confirmSms = mockSms.getLastFor(customer.phoneE164);
     expect(confirmSms?.message).toContain("rezervasyonunuz onaylandı");
 
-    // 5. Dispatch — assign closest driver, fan out two SMS.
-    const dispatchResult = await assignUseCase.execute({ bookingId });
-    expect(dispatchResult.success).toBe(true);
-    expect(dispatchResult.driverProfileId).toBe(driver.driverProfileId);
+    // 5a. Worker sweep — creates a PENDING offer and SMSes the driver.
+    //     Customer is NOT notified at this point; offer might be
+    //     rejected / expire before the driver locks in.
+    const dispatchStats = await dispatchService.sweep();
+    expect(dispatchStats.succeeded).toBe(1);
 
     await flush();
     expect(mockSms.getLastFor(driver.user.phoneE164)?.message).toContain("Yeni iş");
-    expect(mockSms.getLastFor(customer.phoneE164)?.message).toMatch(/sürücünüz atandı/i);
 
     const afterDispatch = await prisma.client.booking.findUnique({ where: { id: bookingId } });
-    expect(afterDispatch?.status).toBe("DRIVER_ASSIGNED");
-    expect(afterDispatch?.driverId).toBe(driver.driverProfileId);
+    expect(afterDispatch?.status).toBe("CONFIRMED");
+    expect(afterDispatch?.driverId).toBeNull();
+    const offer = await prisma.client.driverOffer.findFirstOrThrow({
+      where: { bookingId, driverProfileId: driver.driverProfileId },
+    });
+    expect(offer.status).toBe("PENDING");
+
+    // 5b. Driver accepts → booking DRIVER_ASSIGNED + customer SMS.
+    await acceptOfferUseCase.execute({ offerId: offer.id, driverUserId: driver.user.id });
+    await flush();
+    expect(mockSms.getLastFor(customer.phoneE164)?.message).toMatch(/sürücünüz atandı/i);
+
+    const afterAccept = await prisma.client.booking.findUnique({ where: { id: bookingId } });
+    expect(afterAccept?.status).toBe("DRIVER_ASSIGNED");
+    expect(afterAccept?.driverId).toBe(driver.driverProfileId);
 
     // 6. Cancel → CANCELLED_BY_CUSTOMER + cancel SMS to customer.
     const cancelRes = await request(app.getHttpServer())

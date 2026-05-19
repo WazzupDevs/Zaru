@@ -15,7 +15,8 @@ import { truncateTransactionalTables } from "./helpers/db-cleanup";
 import { buildDriver } from "./helpers/driver-builder";
 import { buildQuote } from "./helpers/quote-builder";
 import { buildUser } from "./helpers/user-builder";
-import { AssignDriverToBookingUseCase } from "../src/modules/dispatch/application/use-cases/assign-driver-to-booking.use-case";
+import { AcceptDriverOfferUseCase } from "../src/modules/dispatch/application/use-cases/accept-driver-offer.use-case";
+import { BookingDispatchService } from "../src/modules/dispatch/infrastructure/workers/booking-dispatch.service";
 import {
   SMS_SENDER_PORT,
   type SmsSenderPort,
@@ -42,7 +43,8 @@ describe("Notifications event chain (Testcontainers)", () => {
   let mockSms: MockSmsSender;
   let sendUseCase: SendNotificationUseCase;
   let deadLetterUseCase: DeadLetterNotificationUseCase;
-  let assignUseCase: AssignDriverToBookingUseCase;
+  let dispatchService: BookingDispatchService;
+  let acceptOfferUseCase: AcceptDriverOfferUseCase;
   let categoryId: string;
   let vehicleTypeId: string;
 
@@ -55,7 +57,8 @@ describe("Notifications event chain (Testcontainers)", () => {
     prisma = app.get(PrismaService);
     sendUseCase = app.get(SendNotificationUseCase);
     deadLetterUseCase = app.get(DeadLetterNotificationUseCase);
-    assignUseCase = app.get(AssignDriverToBookingUseCase);
+    dispatchService = app.get(BookingDispatchService);
+    acceptOfferUseCase = app.get(AcceptDriverOfferUseCase);
     const sender = app.get<SmsSenderPort>(SMS_SENDER_PORT);
     if (!(sender instanceof MockSmsSender)) {
       throw new Error("test setup expects MockSmsSender (NETGSM_USERCODE=DUMMY_*)");
@@ -147,7 +150,7 @@ describe("Notifications event chain (Testcontainers)", () => {
     expect(cancelNotif?.status).toBe("SENT");
   });
 
-  it("DriverDispatched → fans out to driver (NEW_BOOKING_OFFER) + customer (DRIVER_ASSIGNED_TO_BOOKING)", async () => {
+  it("DriverDispatched → driver SMS (NEW_BOOKING_OFFER); accept → customer SMS (DRIVER_ASSIGNED_TO_BOOKING)", async () => {
     const driver = await buildDriver(prisma.client, {
       vehicleTypeId,
       lat: 41.009,
@@ -158,21 +161,44 @@ describe("Notifications event chain (Testcontainers)", () => {
 
     mockSms.clear();
 
-    await assignUseCase.execute({ bookingId });
+    // Worker creates the PENDING offer → driver SMS only. The customer
+    // does NOT get notified yet (offer might be rejected/expire).
+    await dispatchService.sweep();
     await flush();
 
     const driverSms = mockSms.getLastFor(driver.user.phoneE164);
     expect(driverSms?.message).toContain("Yeni iş");
 
+    const dispatchSentKinds = new Set(
+      (
+        await prisma.client.notification.findMany({
+          where: { sourceAggregateId: bookingId, status: "SENT" },
+        })
+      ).map((n) => n.kind),
+    );
+    expect(dispatchSentKinds).toContain("NEW_BOOKING_OFFER");
+    expect(dispatchSentKinds).not.toContain("DRIVER_ASSIGNED_TO_BOOKING");
+
+    // Driver accepts → booking transitions to DRIVER_ASSIGNED, the new
+    // DriverOfferAccepted event fans out the customer notification.
+    const offer = await prisma.client.driverOffer.findFirstOrThrow({
+      where: { bookingId, driverProfileId: driver.driverProfileId },
+    });
+    mockSms.clear();
+    await acceptOfferUseCase.execute({ offerId: offer.id, driverUserId: driver.user.id });
+    await flush();
+
     const customerSms = mockSms.getLastFor(customer.phoneE164);
     expect(customerSms?.message).toMatch(/sürücünüz atandı/i);
 
-    const sent = await prisma.client.notification.findMany({
-      where: { sourceAggregateId: bookingId, status: "SENT" },
-    });
-    const kinds = new Set(sent.map((n) => n.kind));
-    expect(kinds).toContain("NEW_BOOKING_OFFER");
-    expect(kinds).toContain("DRIVER_ASSIGNED_TO_BOOKING");
+    const afterAcceptKinds = new Set(
+      (
+        await prisma.client.notification.findMany({
+          where: { sourceAggregateId: bookingId, status: "SENT" },
+        })
+      ).map((n) => n.kind),
+    );
+    expect(afterAcceptKinds).toContain("DRIVER_ASSIGNED_TO_BOOKING");
   });
 
   it("idempotency: replaying a BookingConfirmed event produces only one notification (24h window)", async () => {
