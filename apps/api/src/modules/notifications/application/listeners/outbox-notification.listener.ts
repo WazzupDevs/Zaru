@@ -9,7 +9,7 @@ import {
 } from "../services/notification-context.provider";
 import { QueueNotificationUseCase } from "../use-cases/queue-notification.use-case";
 
-import type { NotificationChannel } from "../../domain/notification-types";
+import type { NotificationChannel, NotificationKind } from "../../domain/notification-types";
 
 /**
  * Channel routing — token present → PUSH, otherwise SMS fallback.
@@ -32,13 +32,27 @@ function pickChannel(customer: NotificationCustomerContext): {
  * dispatch modules never know notifications exist; they just write
  * the outbox row.
  *
+ * Customer-facing event chains (post-A4f-2b-2):
+ *   booking.BookingCreated     → BOOKING_CONFIRMED  (template: booking.confirmed)
+ *   booking.BookingCancelled   → BOOKING_CANCELLED  (template: booking.cancelled)
+ *   booking.BookingExpired     → BOOKING_EXPIRED    (template: booking.expired)
+ *   dispatch.DriverOfferAccepted → DRIVER_ASSIGNED_TO_BOOKING (template: booking.driver_assigned)
+ *   dispatch.DriverOnTheWay    → DRIVER_ON_THE_WAY  (template: dispatch.driver_on_the_way)
+ *   dispatch.DriverArrived     → DRIVER_ARRIVED    (template: dispatch.driver_arrived)
+ *   dispatch.BookingCompleted  → BOOKING_COMPLETED (template: booking.completed)
+ *
+ * Driver-facing event chains:
+ *   dispatch.DriverDispatched  → NEW_BOOKING_OFFER  (template: dispatch.new_offer)
+ *
+ * Note that DriverDispatched no longer fans out to the customer —
+ * under the offer flow (A4f-2a/2b) that event only marks "offer
+ * created", not "driver locked in". The DRIVER_ASSIGNED_TO_BOOKING
+ * customer notification now fires off DriverOfferAccepted, which is
+ * the actual moment the booking transitions to DRIVER_ASSIGNED.
+ *
  * Recipient phones + push tokens are resolved via NotificationContext
  * Provider — keeps outbox payloads PII-free (ADR 0019, A4b discipline)
  * and concentrates cross-module reads in one tested service (A4e-2).
- *
- * Channel selection (A4e-3): PUSH if the customer has a registered
- * Expo token, otherwise SMS. Drivers always receive SMS for now —
- * driver mobile app + push registration land in A4f.
  *
  * Faz 3+ multi-instance API: in-process listener won't fan out across
  * pods. ADR 0021 revisit trigger.
@@ -52,11 +66,6 @@ export class OutboxNotificationListener {
     private readonly logger: PinoLogger,
   ) {}
 
-  // Subscribed to BookingCreated (not BookingConfirmed): the Created
-  // payload carries totalAmount + eventStartAt + eventEndAt that the
-  // template needs. ConfirmBookingUseCase emits both events in the
-  // same tx; BookingConfirmed is the lifecycle marker (time-only) for
-  // future audit-style consumers and intentionally not consumed here.
   @OnEvent("booking.BookingCreated", { async: true })
   async onBookingCreated(payload: {
     bookingId: string;
@@ -163,6 +172,12 @@ export class OutboxNotificationListener {
     });
   }
 
+  /**
+   * Driver SMS only — under the A4f-2 offer flow this event fires
+   * when the worker creates a PENDING offer. The customer is NOT
+   * notified yet (the offer might be rejected/expired); they receive
+   * DRIVER_ASSIGNED_TO_BOOKING only on DriverOfferAccepted.
+   */
   @OnEvent("dispatch.DriverDispatched", { async: true })
   async onDriverDispatched(payload: {
     bookingId: string;
@@ -177,7 +192,7 @@ export class OutboxNotificationListener {
     if (!booking) {
       this.logger.warn(
         { bookingId: payload.bookingId },
-        "skip DriverDispatched notifications: booking not found",
+        "skip DriverDispatched notification: booking not found",
       );
       return;
     }
@@ -185,14 +200,11 @@ export class OutboxNotificationListener {
     if (!driver) {
       this.logger.warn(
         { driverProfileId: payload.driverProfileId },
-        "skip DriverDispatched notifications: driver not found",
+        "skip DriverDispatched notification: driver not found",
       );
       return;
     }
-    const customer = await this.contextProvider.getCustomerContext(booking.customerId);
-    if (!customer) return;
 
-    // Driver SMS — driver mobile app + push registration land in A4f.
     await this.queueNotification.execute({
       channel: "SMS",
       kind: "NEW_BOOKING_OFFER",
@@ -208,23 +220,113 @@ export class OutboxNotificationListener {
       sourceEventType: "dispatch.DriverDispatched",
       sourceAggregateId: payload.bookingId,
     });
+  }
 
-    // Customer side picks the channel from the customer's push token.
-    const customerRoute = pickChannel(customer);
-    await this.queueNotification.execute({
-      channel: customerRoute.channel,
+  /**
+   * Customer SMS / push — fires when the driver taps Kabul Et and the
+   * booking transitions to DRIVER_ASSIGNED. Replaces the previous
+   * "DriverDispatched fans out to customer" path; that event now only
+   * means "offered, awaiting accept".
+   */
+  @OnEvent("dispatch.DriverOfferAccepted", { async: true })
+  async onDriverOfferAccepted(payload: {
+    offerId: string;
+    bookingId: string;
+    driverProfileId: string;
+    vehicleId: string;
+    acceptedAt: string;
+  }): Promise<void> {
+    await this.fanoutCustomerLifecycle({
+      bookingId: payload.bookingId,
       kind: "DRIVER_ASSIGNED_TO_BOOKING",
+      templateKey: "booking.driver_assigned",
+      sourceEventType: "dispatch.DriverOfferAccepted",
+    });
+  }
+
+  @OnEvent("dispatch.DriverOnTheWay", { async: true })
+  async onDriverOnTheWay(payload: {
+    offerId: string;
+    bookingId: string;
+    driverProfileId: string;
+    onTheWayAt: string;
+  }): Promise<void> {
+    await this.fanoutCustomerLifecycle({
+      bookingId: payload.bookingId,
+      kind: "DRIVER_ON_THE_WAY",
+      templateKey: "dispatch.driver_on_the_way",
+      sourceEventType: "dispatch.DriverOnTheWay",
+    });
+  }
+
+  @OnEvent("dispatch.DriverArrived", { async: true })
+  async onDriverArrived(payload: {
+    offerId: string;
+    bookingId: string;
+    driverProfileId: string;
+    arrivedAt: string;
+  }): Promise<void> {
+    await this.fanoutCustomerLifecycle({
+      bookingId: payload.bookingId,
+      kind: "DRIVER_ARRIVED",
+      templateKey: "dispatch.driver_arrived",
+      sourceEventType: "dispatch.DriverArrived",
+    });
+  }
+
+  @OnEvent("dispatch.BookingCompleted", { async: true })
+  async onBookingCompleted(payload: {
+    offerId: string;
+    bookingId: string;
+    driverProfileId: string;
+    completedAt: string;
+  }): Promise<void> {
+    await this.fanoutCustomerLifecycle({
+      bookingId: payload.bookingId,
+      kind: "BOOKING_COMPLETED",
+      templateKey: "booking.completed",
+      sourceEventType: "dispatch.BookingCompleted",
+    });
+  }
+
+  /**
+   * The four post-accept lifecycle events all share the same shape:
+   * look up customer, render with {customerName, bookingShortId},
+   * pick channel by push-token presence. Extracted to keep each
+   * @OnEvent handler a one-line dispatch.
+   */
+  private async fanoutCustomerLifecycle(params: {
+    bookingId: string;
+    kind: NotificationKind;
+    templateKey: string;
+    sourceEventType: string;
+  }): Promise<void> {
+    const booking = await this.contextProvider.getBookingContext(params.bookingId);
+    if (!booking) {
+      this.logger.warn(
+        { bookingId: params.bookingId, kind: params.kind },
+        "skip lifecycle notification: booking not found",
+      );
+      return;
+    }
+    const customer = await this.contextProvider.getCustomerContext(booking.customerId);
+    if (!customer) return;
+
+    const route = pickChannel(customer);
+    await this.queueNotification.execute({
+      channel: route.channel,
+      kind: params.kind,
       recipientUserId: customer.userId,
       recipientPhone: customer.phoneE164,
-      recipientPushToken: customerRoute.recipientPushToken,
-      templateKey: "booking.driver_assigned",
+      recipientPushToken: route.recipientPushToken,
+      templateKey: params.templateKey,
       locale: "tr",
       variables: {
         customerName: customer.displayName ?? "Müşterimiz",
         bookingShortId: booking.bookingShortId,
       },
-      sourceEventType: "dispatch.DriverDispatched",
-      sourceAggregateId: payload.bookingId,
+      sourceEventType: params.sourceEventType,
+      sourceAggregateId: params.bookingId,
     });
   }
 

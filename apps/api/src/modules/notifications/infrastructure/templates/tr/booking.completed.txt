@@ -1,0 +1,1 @@
+Event Fleet: Sayın {{customerName}}, etkinliğiniz tamamlandı. Bizimle paylaşmak istediğiniz bir geri bildiriminiz varsa uygulamadan iletebilirsiniz. Rezervasyon: {{bookingShortId}}
